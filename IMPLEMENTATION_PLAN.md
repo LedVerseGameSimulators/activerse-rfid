@@ -510,6 +510,38 @@ cd "$ROOT"
 
 ---
 
+## Admin settings
+
+### Original app settings (port these)
+| Setting | Storage | Notes |
+|---------|---------|-------|
+| Admin username + password | `ledplay_login` MySQL table | Default: admin/admin. Change via Settings screen. |
+| Language | `./setting/language_parameter` shelve | Skip v1 — English only |
+| DB import (.sql file) | One-time file picker | Skip v1 — manual SQLite copy |
+
+### Our approach
+- Admin password: stored in DB (`ledplay_login` table, same as original)
+- Change password: single Settings screen in UI (same as original)
+- Game machine URLs + operational config: `.env` file on machine — NOT in UI
+- Reception staff never touches game URLs — IT sets once in `.env`
+
+### `.env` file (Machine 5 — RFID server)
+```
+ADMIN_PASSWORD=admin
+HOOPS_API=http://192.168.1.101:8000
+CLIMB_API=http://192.168.1.102:8001
+LED_HEX_API=http://192.168.1.103:8002
+LASER_API=http://192.168.1.104:8003
+DEFAULT_SESSION_MINUTES=60
+MIN_MINUTES_TO_START=5
+POLL_INTERVAL_SECONDS=120
+DB_PATH=./data/rfid.sqlite
+```
+
+For prod MySQL: add `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASS`, `MYSQL_DB`.
+
+---
+
 ## Key decisions already made
 
 | Decision | Value |
