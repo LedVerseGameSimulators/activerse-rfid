@@ -300,6 +300,35 @@ RFID reader in HID keyboard mode → just capture keypress into a text field (re
 
 ---
 
+## What to reuse from original source vs build fresh
+
+### PORT DIRECTLY from `/Users/apple/parallel-work/ledplayserver_decompiled/`
+
+| Original file | What to port | Notes |
+|---|---|---|
+| `db_operation.py` | ALL SQL queries — all `search_*`, `insert_*`, `update_*` methods | Translate MySQL connector → SQLite. Same logic, same column names. |
+| `ui_customer_regist.py` | `register()` method — phone uniqueness check, insert custom_info + initial recharge_record | Same logic, wrap in POST /players route |
+| `ui_recharge.py` | `recharge()` — `time_left += game_time`, insert recharge_record | Keep recharge_record for accounting history |
+| `ui_bindcard.py` | bind/unbind logic — check if card already bound, update custom_info.card_id, insert bind_card_record | Same |
+| `ui_main.py` | search queries, display table queries | Same |
+
+### EXISTING DB TABLES — keep exact schema, same names
+`custom_info`, `recharge_record`, `bind_card_record` — do NOT rename or restructure.
+New tables added alongside. All original queries still work.
+
+### BUILD FRESH (didn't exist in original)
+| Thing | Reason |
+|---|---|
+| `player_sessions` table | Original stored time_left as float minutes. We use expiry_at datetime. Different model. |
+| `session_adjustments` table | Didn't exist |
+| `central_scores` table | Scores stayed on game machines — no central store |
+| `game_health` table | Didn't exist |
+| `/validate` endpoint | Original used UDP START command. We use HTTP. |
+| Poller (score ingestion) | Original games wrote directly to shared MySQL. Now we poll. |
+| React frontend | Original was tkinter desktop app. Full rewrite. |
+
+---
+
 ## File structure to build
 
 ```
