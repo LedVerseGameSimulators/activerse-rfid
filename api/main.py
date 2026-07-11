@@ -97,6 +97,11 @@ async def update_player(player_id: int, body: PlayerUpdate):
     )
 
 
+@app.delete("/players/{player_id}")
+async def delete_player(player_id: int):
+    return players.delete_player(get_db(), player_id)
+
+
 @app.post("/players/{player_id}/bind-card")
 async def bind_card(player_id: int, body: BindCardRequest):
     return players.bind_card(get_db(), player_id, body.card_id)

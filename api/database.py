@@ -143,19 +143,25 @@ class Database:
                     );
 
                     CREATE TABLE IF NOT EXISTS central_scores (
-                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                        player_id   INTEGER,
-                        card_id     TEXT,
-                        session_id  INTEGER,
-                        game        TEXT,
-                        level       TEXT,
-                        score       REAL,
-                        score2      REAL,
-                        life        INTEGER,
-                        result      INTEGER,
-                        time_used   REAL,
-                        played_at   TEXT,
-                        polled_at   TEXT,
+                        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                        player_id      INTEGER,
+                        card_id        TEXT,
+                        player_slot    INTEGER,   -- 1 or 2 (which player this row is)
+                        session_id     INTEGER,
+                        game           TEXT,
+                        level          TEXT,
+                        end_level      TEXT,
+                        score          REAL,      -- this player's RAW score
+                        final_score    REAL,      -- this player's NORMALIZED score
+                        life           INTEGER,
+                        lives_start    INTEGER,
+                        result         INTEGER,
+                        time_used      REAL,
+                        levels_cleared INTEGER,
+                        difficulty     TEXT,
+                        started_at     TEXT,
+                        played_at      TEXT,
+                        polled_at      TEXT,
                         UNIQUE(game, card_id, level, played_at, score)
                     );
 
@@ -165,7 +171,22 @@ class Database:
                         last_checked    TEXT,
                         active_game_id  TEXT
                     );
+
+                    CREATE TABLE IF NOT EXISTS poll_cursors (
+                        game     TEXT PRIMARY KEY,
+                        last_ts  TEXT
+                    );
                 """)
+                # Idempotent ALTERs for central_scores (existing DBs upgrading
+                # from the pre-per-player schema).
+                for _col, _typ in (("player_slot", "INTEGER"), ("end_level", "TEXT"),
+                                   ("final_score", "REAL"), ("lives_start", "INTEGER"),
+                                   ("levels_cleared", "INTEGER"), ("difficulty", "TEXT"),
+                                   ("started_at", "TEXT")):
+                    try:
+                        con.execute(f"ALTER TABLE central_scores ADD COLUMN {_col} {_typ}")
+                    except sqlite3.OperationalError:
+                        pass
                 # Optional columns on custom_info
                 for col, typ in (("email", "TEXT"), ("age", "INTEGER"), ("notes", "TEXT")):
                     try:
@@ -180,7 +201,7 @@ class Database:
                         ("admin", os.getenv("ADMIN_PASSWORD", "admin")),
                     )
                 # Seed game_health rows
-                for game in ("hoops", "climb", "led_hex", "laser"):
+                for game in ("hoops", "laser", "climb", "grid", "led_hex"):
                     con.execute(
                         "INSERT OR IGNORE INTO game_health (game, status) VALUES (?, 'down')",
                         (game,),
@@ -255,6 +276,16 @@ class Database:
 
     def delete_table_data(self, table: str):
         self._execute(f"DELETE FROM {table}")
+
+    def delete_player(self, player_id: int):
+        self._execute("DELETE FROM custom_info WHERE custom_id = ?", (player_id,))
+
+    def search_recharge_tb_by_id(self, custom_id: int):
+        rows = self._execute(
+            "SELECT * FROM recharge_record WHERE custom_id = ? ORDER BY date DESC",
+            (str(custom_id),), fetch="all"
+        )
+        return [dict(r) for r in rows] if rows else []
 
     def insert_to_table_login(self, account, password):
         return self._rowcount(
@@ -357,23 +388,46 @@ class Database:
     def upsert_central_score(self, score: dict):
         self._execute(
             "INSERT OR IGNORE INTO central_scores "
-            "(player_id, card_id, session_id, game, level, score, score2, life, "
-            "result, time_used, played_at, polled_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(player_id, card_id, player_slot, session_id, game, level, end_level, "
+            "score, final_score, life, lives_start, result, time_used, "
+            "levels_cleared, difficulty, started_at, played_at, polled_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 score.get("player_id"),
                 score.get("card_id") or "",
+                score.get("player_slot", 1),
                 score.get("session_id"),
                 score["game"],
                 score.get("level", ""),
+                score.get("end_level", ""),
                 score.get("score", 0),
-                score.get("score2", 0),
+                score.get("final_score", 0),
                 score.get("life"),
+                score.get("lives_start"),
                 score.get("result"),
                 score.get("time_used", 0),
+                score.get("levels_cleared", 0),
+                score.get("difficulty", ""),
+                score.get("started_at", ""),
                 score.get("played_at"),
                 self._now_iso(),
             ),
+        )
+
+    # ── Poll cursor persistence (Task 3.4) ────────────────────────────────
+
+    def get_poll_cursor(self, game: str):
+        row = self._execute(
+            "SELECT last_ts FROM poll_cursors WHERE game = ?",
+            (game,), fetch="one"
+        )
+        return row["last_ts"] if row else None
+
+    def set_poll_cursor(self, game: str, last_ts: str):
+        self._execute(
+            "INSERT INTO poll_cursors (game, last_ts) VALUES (?, ?) "
+            "ON CONFLICT(game) DO UPDATE SET last_ts = excluded.last_ts",
+            (game, last_ts),
         )
 
     def update_game_health(self, game: str, status: str, active_game_id: str = ""):
@@ -451,6 +505,7 @@ class Database:
             "player": player[0] if player else None,
             "sessions": sessions,
             "scores": [dict(r) for r in scores] if scores else [],
+            "recharge_history": self.search_recharge_tb_by_id(player_id),
         }
 
     def verify_login(self, username: str, password: str) -> bool:

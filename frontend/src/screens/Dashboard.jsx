@@ -50,9 +50,10 @@ export default function Dashboard() {
           <select style={select} value={game} onChange={e => setGame(e.target.value)}>
             <option value="all">All Games</option>
             <option value="hoops">Hoops</option>
+            <option value="laser">Laser Trap</option>
             <option value="climb">Climb</option>
-            <option value="led_hex">LED Hex</option>
-            <option value="laser">Laser</option>
+            <option value="grid">Floor Is Lava</option>
+            <option value="led_hex">LED Hexagon</option>
           </select>
           <select style={select} value={period} onChange={e => setPeriod(e.target.value)}>
             <option value="today">Today</option>

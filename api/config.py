@@ -15,11 +15,15 @@ MIN_MINUTES_TO_START    = int(os.getenv("MIN_MINUTES_TO_START", "5"))
 
 # ── Game registry ──────────────────────────────────────────────────────────
 # In prod, change to actual LAN IPs per machine.
+# Keys MUST equal each game's own GAME_NAME so central_scores.game aligns with
+# the game-side rows. Ports are the confirmed real ports (verified from each
+# repo's ws_bridge.py / vite.config.js / config.js).
 GAME_REGISTRY = {
     "hoops":   {"api": os.getenv("HOOPS_API",   "http://localhost:8000"), "label": "Hoops"},
-    "climb":   {"api": os.getenv("CLIMB_API",   "http://localhost:8001"), "label": "Climb"},
-    "led_hex": {"api": os.getenv("LED_HEX_API", "http://localhost:8002"), "label": "LED Hex"},
-    "laser":   {"api": os.getenv("LASER_API",   "http://localhost:8003"), "label": "Laser Trap"},
+    "laser":   {"api": os.getenv("LASER_API",   "http://localhost:8001"), "label": "Laser Trap"},
+    "climb":   {"api": os.getenv("CLIMB_API",   "http://localhost:8002"), "label": "Climb"},
+    "grid":    {"api": os.getenv("GRID_API",    "http://localhost:8003"), "label": "Floor Is Lava"},
+    "led_hex": {"api": os.getenv("LED_HEX_API", "http://localhost:8004"), "label": "LED Hexagon"},
 }
 
 # ── Poller ─────────────────────────────────────────────────────────────────

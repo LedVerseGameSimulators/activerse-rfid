@@ -40,6 +40,7 @@ def get_player(db: Database, player_id: int):
     )
     player["sessions"] = sessions
     player["scores"] = [dict(s) for s in scores] if scores else []
+    player["recharge_history"] = db.search_recharge_tb_by_id(player_id)
     return player
 
 
@@ -119,6 +120,11 @@ def bind_card(db: Database, player_id: int, card_id: str):
         db.insert_to_table_bind_card_record(phone, "1", card_id, str_time)
 
     return {"success": True, "card_id": card_id}
+
+
+def delete_player(db: Database, player_id: int):
+    db.delete_player(player_id)
+    return {"success": True}
 
 
 def unbind_card(db: Database, player_id: int):
