@@ -89,10 +89,10 @@ The RFID server is the central hub. All 5 game machines run independently and th
 | Service | Repo | API Port | WS Port | UI Port | GAME_NAME key |
 |---------|------|----------|---------|---------|---------------|
 | Hoops | `led-hoops` | 8000 | 8765 | 5173 | `hoops` |
-| Climb | `led-climb` | 8001 | 8766 | 5174 | `climb` |
-| LED Hexagon | `led-hexagon` | 8002 | 8767 | 5175 | `led_hex` |
-| Laser Trap | `led-laser` | 8003 | 8768 | 5176 | `laser` |
-| Floor Is Lava | `led-grid` | 8004 | 8769 | 5177 | `grid` |
+| Laser Trap | `led-laser` | 8001 | 8768 | 5174 | `laser` |
+| Climb | `led-climb` | 8002 | 8766 | 5175 | `climb` |
+| Floor Is Lava | `led-grid` | 8003 | 8769 | 5176 | `grid` |
+| LED Hexagon | `led-hexagon` | 8004 | 8767 | 5177 | `led_hex` |
 | **RFID Server** | `activerse-rfid` | **9000** | — | **5178** | — |
 
 All repos live at: `/Users/apple/activerse_final_changes/<repo>/`
@@ -108,36 +108,35 @@ All repos live at: `/Users/apple/activerse_final_changes/<repo>/`
 - **Scoring:** Score per hoop made. 1P and 2P variants.
 - **Run:** `python3 -m api.main` → :8000 · `python3 ws_bridge.py` → :8765 · `npm run dev` → :5173
 
-#### 2. Climb (`led-climb`, port 8001)
+#### 2. Laser Trap (`led-laser`, port 8001)
+- **Grid:** 6 rows × 16 cols (rectangular floor)
+- **Level series:** `-`, `--`, `---`, `----` (4 folders + `测试123.led` test file)
+- **Gameplay:** Laser beams cross the floor. Players dodge/navigate without hitting lasers. 1P only — no `.ledb` 2P levels exist for this game.
+- **Scoring:** Survival time + completion bonus.
+- **Run:** `python3 -m api.main` → :8001 · `python3 ws_bridge.py` → :8768 · `npm run dev` → :5174
+
+#### 3. Climb (`led-climb`, port 8002)
 - **Grid:** 6 rows × 33 cols (rectangular floor tiles)
-- **Level series:** `-` (A-series, 25 levels), `--` (B-series, 31 levels), `---` (DK-series, 10 2P levels)
+- **Level series:** `-` (A-series, 25 levels), `--` (B-series, 31 levels), `---` (DK-series, 9 2P levels)
 - **Gameplay:** Step blue/coloured tiles → +1 score. Red tiles = hazard (-1 life/1.2s). Green = shield. 5-min session, 20 lives persist across levels.
 - **Scoring:** Score divided by player count and time. `game_scode_divide_person=True`, `game_scode_divide_time=True`.
 - **2P mode:** Blue = P1, Orange = P2. DK-series levels use checkerboard spatial split.
-- **Run:** `python3 -m api.main` → :8001 · `python3 ws_bridge.py` → :8766 · `npm run dev` → :5174
+- **Run:** `python3 -m api.main` → :8002 · `python3 ws_bridge.py` → :8766 · `npm run dev` → :5175
 
-#### 3. LED Hexagon (`led-hexagon`, port 8002)
-- **Grid:** 16 rows × 26 cols (hexagonal floor with 3-ring RGB per cell — DIFFERENT from other games)
-- **Level series:** `-`, `--`, `---` (3 folders)
-- **Gameplay:** Hexagonal LED floor. Multi-ring colour targets. Step tiles to score.
-- **Scoring:** Per-cell score. 3-ring RGB each cell (not single RGB like other games).
-- **Special:** Simulator uses hexagonal canvas rendering, not square grid.
-- **Run:** `python3 -m api.main` → :8002 · `python3 ws_bridge.py` → :8767 · `npm run dev` → :5175
-
-#### 4. Laser Trap (`led-laser`, port 8003)
-- **Grid:** 6 rows × 16 cols (rectangular floor)
-- **Level series:** `-`, `--`, `---`, `----` (4 folders + `测试123.led` test file)
-- **Gameplay:** Laser beams cross the floor. Players dodge/navigate without hitting lasers.
-- **Scoring:** Survival time + completion bonus.
-- **Run:** `python3 -m api.main` → :8003 · `python3 ws_bridge.py` → :8768 · `npm run dev` → :5176
-
-#### 5. Floor Is Lava / Grid (`led-grid`, port 8004)
+#### 4. Floor Is Lava / Grid (`led-grid`, port 8003)
 - **Grid:** 16 rows × 26 cols (rectangular floor tiles, single RGB per cell)
-- **Level series:** `-` (10 levels), `--` (15 levels), `---` (14 hard), `----` (13 2P `.ledb`)
+- **Level series:** `-` (10 levels), `--` (15 levels), `---` (14 hard), `----` (12 2P `.ledb`, live tier — a separate `---/---/` nested directory also contains `.ledb` files but is dead code, never globbed by the level loader)
 - **Gameplay:** Avoid red lava tiles, step blue safe tiles. Green = shield. 5-min session, 20 lives.
 - **Scoring:** Raw score = final score. NO division (`game_scode_divide_person=False`, `game_scode_divide_time=False`).
-- **Status:** ⚠️ Implementation in progress (another agent). Repo exists but may not be fully runnable yet.
-- **Run:** `python3 -m api.main` → :8004 · `python3 ws_bridge.py` → :8769 · `npm run dev` → :5177
+- **Run:** `python3 -m api.main` → :8003 · `python3 ws_bridge.py` → :8769 · `npm run dev` → :5176
+
+#### 5. LED Hexagon (`led-hexagon`, port 8004)
+- **Grid:** 16 rows × 26 cols (hexagonal floor with 3-ring RGB per cell — DIFFERENT from other games)
+- **Level series:** `-` (pro, 17 levels), `--` (advanced/YC memory-mode, 18 levels), `---` (2P DK + YCDK memory-mode, 22 levels)
+- **Gameplay:** Hexagonal LED floor. Multi-ring colour targets. Step tiles to score. `--`/YCDK-tier levels add a memory mechanic: targets reveal for 5s then hide as camouflage teal, with a hint tile (alternates P1/P2 color in 2P) that re-reveals for a -5 score cost.
+- **Scoring:** Per-cell score. 3-ring RGB each cell (not single RGB like other games).
+- **Special:** Simulator uses hexagonal canvas rendering, not square grid.
+- **Run:** `python3 -m api.main` → :8004 · `python3 ws_bridge.py` → :8767 · `npm run dev` → :5177
 
 ---
 
@@ -280,10 +279,10 @@ In `api/config.py`:
 ```python
 GAME_REGISTRY = {
     "hoops":   {"api": os.getenv("HOOPS_API",   "http://localhost:8000"), "label": "Hoops"},
-    "climb":   {"api": os.getenv("CLIMB_API",   "http://localhost:8001"), "label": "Climb"},
-    "led_hex": {"api": os.getenv("LED_HEX_API", "http://localhost:8002"), "label": "LED Hex"},
-    "laser":   {"api": os.getenv("LASER_API",   "http://localhost:8003"), "label": "Laser Trap"},
-    "grid":    {"api": os.getenv("GRID_API",    "http://localhost:8004"), "label": "Floor Is Lava"},  # ADD
+    "laser":   {"api": os.getenv("LASER_API",   "http://localhost:8001"), "label": "Laser Trap"},
+    "climb":   {"api": os.getenv("CLIMB_API",   "http://localhost:8002"), "label": "Climb"},
+    "grid":    {"api": os.getenv("GRID_API",    "http://localhost:8003"), "label": "Floor Is Lava"},
+    "led_hex": {"api": os.getenv("LED_HEX_API", "http://localhost:8004"), "label": "LED Hex"},
 }
 ```
 
@@ -372,11 +371,11 @@ npm run dev
 ```env
 ADMIN_PASSWORD=yourpassword
 DB_PATH=data/rfid.sqlite
-HOOPS_API=http://192.168.1.10:8000
-CLIMB_API=http://192.168.1.11:8001
-LED_HEX_API=http://192.168.1.12:8002
-LASER_API=http://192.168.1.13:8003
-GRID_API=http://192.168.1.14:8004
+HOOPS_API=http://192.168.1.101:8000
+LASER_API=http://192.168.1.102:8001
+CLIMB_API=http://192.168.1.103:8002
+GRID_API=http://192.168.1.104:8003
+LED_HEX_API=http://192.168.1.105:8004
 POLL_INTERVAL_SECONDS=120
 DEFAULT_SESSION_MINUTES=60
 MIN_MINUTES_TO_START=5

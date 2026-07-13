@@ -3,15 +3,19 @@
 **Repo:** `/Users/apple/activerse_final_changes/activerse-rfid`  
 **Original source:** `/Users/apple/parallel-work/ledplayserver_decompiled/`  
 **Original source (py):** `/Users/apple/parallel-work/ledplayserver_py_source/`  
-**Status:** Repo initialised, nothing built yet.
+**Status:** Fully built — backend (players, sessions/credit CRUD, card bind/unbind,
+settings incl. per-game push, dashboard/leaderboard, background poller) and frontend
+are implemented and committed. Not yet deployed/tested on real onsite hardware — see
+`ONSITE_LAN_INTEGRATION_PLAN.md` for the LAN rollout plan and `AGENT_PROMPT.md` for the
+onsite setup checklist.
 
 ---
 
 ## What this is
 
 Central reception/admin app for the Activerse LED floor game kiosk.  
-Sits on a 5th machine (reception PC). Manages players, RFID cards, sessions.  
-4 game machines (Hoops, Climb, LED Hex, Laser) each run their own FastAPI stack.
+Sits on the 6th machine (reception PC). Manages players, RFID cards, sessions.  
+5 game machines (Hoops, Laser, Climb, Grid, Hexagon) each run their own FastAPI stack.
 
 **This server does NOT control game start/stop.** Game machines are autonomous.  
 Its only role in gameplay = validate RFID card when player starts a game.
@@ -21,12 +25,18 @@ Its only role in gameplay = validate RFID card when player starts a game.
 ## Real-world machine layout
 
 ```
-Machine 1 (Hoops)    :8000 API  :8765 WS  :5173 UI
-Machine 2 (Climb)    :8001 API  :8766 WS  :5174 UI
-Machine 3 (LED Hex)  :8002 API  :8767 WS  :5175 UI
-Machine 4 (Laser)    :8003 API  :8768 WS  :5176 UI
-Machine 5 (RFID)     :9000 API            :5180 UI  ← THIS REPO
+Machine 1 (Hoops)      :8000 API  :8765 WS  :5173 UI
+Machine 2 (Laser)      :8001 API  :8768 WS  :5174 UI
+Machine 3 (Climb)      :8002 API  :8766 WS  :5175 UI
+Machine 4 (Grid)       :8003 API  :8769 WS  :5176 UI
+Machine 5 (Hexagon)    :8004 API  :8767 WS  :5177 UI
+Machine 6 (RFID)       :9000 API            :5178 UI  ← THIS REPO
 ```
+
+(Matches `ONSITE_LAN_INTEGRATION_PLAN.md`'s port map. Note this differs from the
+port assignments quoted in the per-game sections further down this same document and
+in `AGENT_PLAYBOOK.md` — those pre-date the LAN rollout plan; treat
+`ONSITE_LAN_INTEGRATION_PLAN.md` as the current source of truth for real ports.)
 
 Dev: all on same machine, localhost.  
 Prod: change `GAME_REGISTRY` env vars to actual LAN IPs.
