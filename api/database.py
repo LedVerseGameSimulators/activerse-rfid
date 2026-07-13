@@ -176,6 +176,18 @@ class Database:
                         game     TEXT PRIMARY KEY,
                         last_ts  TEXT
                     );
+
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key   TEXT PRIMARY KEY,
+                        value TEXT
+                    );
+
+                    CREATE TABLE IF NOT EXISTS game_settings_pushed (
+                        game               TEXT PRIMARY KEY,
+                        default_difficulty TEXT,
+                        session_minutes    INTEGER,
+                        pushed_at          TEXT
+                    );
                 """)
                 # Idempotent ALTERs for central_scores (existing DBs upgrading
                 # from the pre-per-player schema).
@@ -188,7 +200,8 @@ class Database:
                     except sqlite3.OperationalError:
                         pass
                 # Optional columns on custom_info
-                for col, typ in (("email", "TEXT"), ("age", "INTEGER"), ("notes", "TEXT")):
+                for col, typ in (("email", "TEXT"), ("age", "INTEGER"), ("notes", "TEXT"),
+                                ("credit_balance", "REAL DEFAULT 0")):
                     try:
                         con.execute(f"ALTER TABLE custom_info ADD COLUMN {col} {typ}")
                     except sqlite3.OperationalError:
@@ -205,6 +218,12 @@ class Database:
                     con.execute(
                         "INSERT OR IGNORE INTO game_health (game, status) VALUES (?, 'down')",
                         (game,),
+                    )
+                # Seed default settings (money/time ratios + topup limits)
+                for k, v in (("money_per_minute", "25"), ("min_topup_minutes", "10"),
+                            ("max_topup_minutes", "600")):
+                    con.execute(
+                        "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v)
                     )
                 con.commit()
             finally:
@@ -269,6 +288,32 @@ class Database:
     def update_custom_value(self, custom_id, flag, value):
         sql = f"UPDATE custom_info SET {flag} = ? WHERE custom_id = ?"
         return self._rowcount(sql, (value, custom_id))
+
+    def get_credit_balance(self, player_id: int) -> float:
+        row = self._execute(
+            "SELECT credit_balance FROM custom_info WHERE custom_id = ?",
+            (player_id,), fetch="one"
+        )
+        return float(row["credit_balance"]) if row and row["credit_balance"] is not None else 0.0
+
+    def add_credit(self, player_id: int, minutes: float, amount_money: float,
+                   performed_by: str = ""):
+        self._execute(
+            "UPDATE custom_info SET credit_balance = COALESCE(credit_balance, 0) + ? "
+            "WHERE custom_id = ?",
+            (minutes, player_id),
+        )
+        str_time = self._now_iso()
+        self.insert_to_table_recharge_record(str(player_id), str(amount_money), str(minutes), str_time)
+        return self.get_credit_balance(player_id)
+
+    def deduct_credit(self, player_id: int, minutes: float):
+        self._execute(
+            "UPDATE custom_info SET credit_balance = COALESCE(credit_balance, 0) - ? "
+            "WHERE custom_id = ?",
+            (minutes, player_id),
+        )
+        return self.get_credit_balance(player_id)
 
     def search_from_table(self, table: str):
         rows = self._execute(f"SELECT * FROM {table}", fetch="all")
@@ -352,6 +397,18 @@ class Database:
             )
         )
 
+    def get_active_session_by_player(self, player_id: int):
+        now = self._now_iso()
+        return self._row_to_dict(
+            self._execute(
+                "SELECT * FROM player_sessions WHERE player_id = ? "
+                "AND closed_at IS NULL AND expiry_at > ? "
+                "ORDER BY expiry_at DESC LIMIT 1",
+                (player_id, now),
+                fetch="one",
+            )
+        )
+
     def adjust_session(self, session_id: int, delta_min: int, reason: str, adjusted_by: str = ""):
         session = self.get_session(session_id)
         if not session:
@@ -412,6 +469,35 @@ class Database:
                 score.get("played_at"),
                 self._now_iso(),
             ),
+        )
+
+    # ── Settings (Task 3.1/3.2: money/time ratios, per-game pushed defaults) ─
+
+    def get_all_settings(self) -> dict:
+        rows = self._execute("SELECT key, value FROM settings", fetch="all")
+        return {r["key"]: r["value"] for r in rows} if rows else {}
+
+    def set_setting(self, key: str, value: str):
+        self._execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+    def push_game_settings(self, game: str, default_difficulty: str, session_minutes: int):
+        self._execute(
+            "INSERT INTO game_settings_pushed (game, default_difficulty, session_minutes, pushed_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(game) DO UPDATE SET "
+            "default_difficulty=excluded.default_difficulty, "
+            "session_minutes=excluded.session_minutes, pushed_at=excluded.pushed_at",
+            (game, default_difficulty, session_minutes, self._now_iso()),
+        )
+
+    def get_pushed_game_settings(self, game: str):
+        return self._row_to_dict(
+            self._execute(
+                "SELECT * FROM game_settings_pushed WHERE game = ?", (game,), fetch="one"
+            )
         )
 
     # ── Poll cursor persistence (Task 3.4) ────────────────────────────────

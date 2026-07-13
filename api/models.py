@@ -24,10 +24,20 @@ class BindCardRequest(BaseModel):
     card_id: str
 
 
+class TopUpRequest(BaseModel):
+    minutes: float
+    amount_money: Optional[float] = None
+
+
 class SessionCreate(BaseModel):
     player_id: int
     duration_min: int = Field(default=60, ge=1)
     notes: Optional[str] = ""
+
+
+class GameSettingsPush(BaseModel):
+    default_difficulty: str
+    session_minutes: int
 
 
 class SessionAdjust(BaseModel):

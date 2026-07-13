@@ -19,6 +19,7 @@ def _player_row_to_api(row: dict) -> dict:
         "card_id": row.get("card_id") or None,
         "notes": row.get("notes"),
         "time_left": row.get("time_left"),
+        "credit_balance": float(row.get("credit_balance") or 0),
     }
 
 
@@ -106,6 +107,19 @@ def bind_card(db: Database, player_id: int, card_id: str):
 
     custom_info = result[0]
     card_id_old = custom_info.get("card_id") or ""
+
+    # Guard: don't silently orphan an active session by swapping the card
+    # out from under it. Staff must close the session first.
+    if card_id_old and card_id_old != card_id:
+        active = db.get_active_session_by_player(player_id)
+        if active:
+            raise HTTPException(
+                400,
+                f"Player has an active session (#{active['id']}, "
+                f"{active['expiry_at']}) on their current card — "
+                f"close it before rebinding."
+            )
+
     str_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     phone = custom_info["phone_num"]
 
@@ -135,7 +149,26 @@ def unbind_card(db: Database, player_id: int):
     card_id_old = custom_info.get("card_id") or ""
     if not card_id_old:
         raise HTTPException(400, "No card bound")
+
+    active = db.get_active_session_by_player(player_id)
+    if active:
+        raise HTTPException(
+            400,
+            f"Player has an active session (#{active['id']}, "
+            f"{active['expiry_at']}) — close it before unbinding."
+        )
+
     str_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.update_custom_value(player_id, "card_id", "")
     db.insert_to_table_bind_card_record(custom_info["phone_num"], "0", card_id_old, str_time)
     return {"success": True}
+
+
+def topup_player(db: Database, player_id: int, minutes: float, amount_money: float = 0):
+    rows = db.search_custom_tb_by_id(player_id)
+    if not rows:
+        raise HTTPException(404, "Player not found")
+    if minutes <= 0:
+        raise HTTPException(400, "Minutes must be positive")
+    new_balance = db.add_credit(player_id, minutes, amount_money)
+    return {"success": True, "credit_balance": new_balance}

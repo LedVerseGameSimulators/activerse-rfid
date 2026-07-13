@@ -4,17 +4,19 @@ Reception/admin hub for LED floor game kiosk.
 """
 import asyncio
 
-from fastapi import FastAPI, Query
+import httpx
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from .config import API_HOST, API_PORT
+from .config import API_HOST, API_PORT, GAME_REGISTRY
 from .database import get_db
 from . import players, sessions, dashboard
 from . import poller as poller_mod
 from .models import (
-    PlayerCreate, PlayerUpdate, BindCardRequest,
+    PlayerCreate, PlayerUpdate, BindCardRequest, TopUpRequest,
     SessionCreate, SessionAdjust, LoginRequest, ChangePasswordRequest,
+    GameSettingsPush,
 )
 
 app = FastAPI(title="Activerse RFID Server", version="1.0.0")
@@ -69,6 +71,48 @@ async def change_password(body: ChangePasswordRequest):
     return {"success": True}
 
 
+# ── Settings (Task 3.1/3.2: money/time ratios + per-game push) ─────────────
+
+@app.get("/settings")
+async def get_settings():
+    return get_db().get_all_settings()
+
+
+@app.put("/settings")
+async def update_settings(body: dict):
+    db = get_db()
+    for k, v in body.items():
+        db.set_setting(k, str(v))
+    return db.get_all_settings()
+
+
+@app.put("/games/{game_key}/settings")
+async def push_game_settings(game_key: str, body: GameSettingsPush):
+    if game_key not in GAME_REGISTRY:
+        raise HTTPException(404, f"Unknown game: {game_key}")
+    base_url = GAME_REGISTRY[game_key]["api"]
+    async with httpx.AsyncClient(timeout=5) as client:
+        try:
+            resp = await client.post(f"{base_url}/settings", json={
+                "default_difficulty": body.default_difficulty,
+                "session_minutes": body.session_minutes,
+            })
+            resp.raise_for_status()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach {game_key}: {e}")
+    get_db().push_game_settings(game_key, body.default_difficulty, body.session_minutes)
+    return {"success": True}
+
+
+@app.get("/games/{game_key}/settings")
+async def get_pushed_game_settings(game_key: str):
+    if game_key not in GAME_REGISTRY:
+        raise HTTPException(404, f"Unknown game: {game_key}")
+    return get_db().get_pushed_game_settings(game_key) or {}
+
+
 # ── Players ───────────────────────────────────────────────────────────────
 
 @app.get("/players")
@@ -110,6 +154,11 @@ async def bind_card(player_id: int, body: BindCardRequest):
 @app.post("/players/{player_id}/unbind-card")
 async def unbind_card(player_id: int):
     return players.unbind_card(get_db(), player_id)
+
+
+@app.post("/players/{player_id}/topup")
+async def topup_player(player_id: int, body: TopUpRequest):
+    return players.topup_player(get_db(), player_id, body.minutes, body.amount_money or 0)
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────

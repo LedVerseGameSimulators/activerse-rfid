@@ -17,11 +17,24 @@ def _minutes_remaining(expiry_at: str) -> float:
 
 def issue_session(db: Database, player_id: int, duration_min: int = DEFAULT_SESSION_MINUTES,
                   notes: str = ""):
+    """Deducts the full session duration from credit_balance up front, no
+    refund on early close or unused expiry (matches the existing clock-based
+    player_sessions model exactly)."""
     rows = db.search_custom_tb_by_id(player_id)
     if not rows:
         raise HTTPException(404, "Player not found")
+
+    balance = db.get_credit_balance(player_id)
+    if balance < duration_min:
+        raise HTTPException(
+            400,
+            f"Insufficient credit balance: has {balance:.0f} min, "
+            f"needs {duration_min} min. Top up first."
+        )
+
     card_id = rows[0].get("card_id") or ""
     sid, issued_at, expiry_at = db.create_session(player_id, card_id, duration_min, notes)
+    db.deduct_credit(player_id, duration_min)
     return {
         "session_id": sid,
         "player_id": player_id,
@@ -30,6 +43,7 @@ def issue_session(db: Database, player_id: int, duration_min: int = DEFAULT_SESS
         "expiry_at": expiry_at,
         "duration_min": duration_min,
         "minutes_remaining": _minutes_remaining(expiry_at),
+        "credit_balance_after": balance - duration_min,
     }
 
 

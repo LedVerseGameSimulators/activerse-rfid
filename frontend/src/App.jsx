@@ -4,7 +4,9 @@ import ReceptionDesk from './screens/ReceptionDesk'
 import PlayerAdmin from './screens/PlayerAdmin'
 import Dashboard from './screens/Dashboard'
 import Settings from './screens/Settings'
+import SessionsAdmin from './screens/SessionsAdmin'
 import Login from './screens/Login'
+import PublicLeaderboard from './screens/PublicLeaderboard'
 
 const navStyle = {
   display: 'flex',
@@ -29,6 +31,7 @@ function AppShell() {
       <nav style={navStyle}>
         <NavLink to="/" style={linkStyle} end>Reception</NavLink>
         <NavLink to="/players" style={linkStyle}>Players</NavLink>
+        <NavLink to="/sessions" style={linkStyle}>Sessions</NavLink>
         <NavLink to="/dashboard" style={linkStyle}>Dashboard</NavLink>
         <NavLink to="/settings" style={linkStyle}>Settings</NavLink>
       </nav>
@@ -36,6 +39,7 @@ function AppShell() {
         <Routes>
           <Route path="/" element={<ReceptionDesk />} />
           <Route path="/players" element={<PlayerAdmin />} />
+          <Route path="/sessions" element={<SessionsAdmin />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
@@ -46,6 +50,12 @@ function AppShell() {
 
 export default function App() {
   const [authed, setAuthed] = useState(() => sessionStorage.getItem('rfid_auth') === '1')
+
+  // No-login public leaderboard -- checked BEFORE the auth gate, since the
+  // rest of the app is a single all-or-nothing gate with no per-route auth.
+  if (window.location.pathname === '/leaderboard') {
+    return <PublicLeaderboard />
+  }
 
   if (!authed) {
     return <Login onLogin={() => { sessionStorage.setItem('rfid_auth', '1'); setAuthed(true) }} />

@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import PlayerSearch from './PlayerSearch'
 import PlayerCard from '../components/PlayerCard'
 import RegisterPlayer from './RegisterPlayer'
 import IssueSession from './IssueSession'
 import AdjustSession from './AdjustSession'
+import BindCard from './BindCard'
+import TopUp from './TopUp'
 import { api } from '../api'
 
 export default function ReceptionDesk() {
@@ -12,6 +14,13 @@ export default function ReceptionDesk() {
   const [activeSession, setActiveSession] = useState(null)
   const [showIssue, setShowIssue] = useState(false)
   const [showAdjust, setShowAdjust] = useState(false)
+  const [showBind, setShowBind] = useState(false)
+  const [showTopUp, setShowTopUp] = useState(false)
+  const [settings, setSettings] = useState(null)
+
+  useEffect(() => {
+    api('/settings').then(setSettings).catch(() => setSettings({}))
+  }, [])
 
   const loadSession = async (player) => {
     try {
@@ -36,6 +45,17 @@ export default function ReceptionDesk() {
 
   const refresh = async () => {
     if (selected) await loadSession(selected)
+  }
+
+  const refreshPlayer = async () => {
+    if (!selected) return
+    try {
+      const updated = await api(`/players/${selected.id}`)
+      setSelected(updated)
+      await loadSession(updated)
+    } catch {
+      await refresh()
+    }
   }
 
   return (
@@ -74,6 +94,8 @@ export default function ReceptionDesk() {
                 activeSession={activeSession}
                 onIssue={() => setShowIssue(true)}
                 onAdjust={() => setShowAdjust(true)}
+                onBindCard={() => setShowBind(true)}
+                onTopUp={() => setShowTopUp(true)}
               />
             </div>
           )}
@@ -92,6 +114,20 @@ export default function ReceptionDesk() {
           session={activeSession}
           onDone={() => { setShowAdjust(false); refresh() }}
           onCancel={() => setShowAdjust(false)}
+        />
+      )}
+      {showBind && selected && (
+        <BindCard
+          player={selected}
+          onDone={() => { setShowBind(false); refreshPlayer() }}
+        />
+      )}
+      {showTopUp && selected && (
+        <TopUp
+          player={selected}
+          moneyPerMinute={settings?.money_per_minute}
+          onDone={() => { setShowTopUp(false); refreshPlayer() }}
+          onCancel={() => setShowTopUp(false)}
         />
       )}
     </div>
