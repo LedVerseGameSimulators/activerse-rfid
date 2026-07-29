@@ -1,5 +1,6 @@
 """Dashboard queries — leaderboard, stats, health, player history."""
 import json
+from typing import Optional
 
 from .database import Database
 
@@ -9,9 +10,10 @@ def get_health(db: Database):
 
 
 def get_leaderboard(db: Database, game: str = "all", period: str = "alltime",
-                    limit: int = 20, board: str = "individual"):
+                    limit: int = 20, board: str = "individual",
+                    company_id: Optional[int] = None):
     if board == "team":
-        rows = db.get_team_leaderboard(game, period, limit)
+        rows = db.get_team_leaderboard(game, period, limit, company_id=company_id)
         for r in rows:
             try:
                 members = json.loads(r.get("members_json") or "[]")
@@ -23,7 +25,7 @@ def get_leaderboard(db: Database, game: str = "all", period: str = "alltime",
             ) or f"Team ({r.get('member_count', '?')})"
             r["score"] = r.get("final_score") if r.get("final_score") is not None else r.get("score")
         return rows
-    return db.get_leaderboard(game, period, limit)
+    return db.get_leaderboard(game, period, limit, company_id=company_id)
 
 
 def get_stats(db: Database):

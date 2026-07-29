@@ -5,6 +5,10 @@ import PlayerAdmin from './screens/PlayerAdmin'
 import Dashboard from './screens/Dashboard'
 import Settings from './screens/Settings'
 import SessionsAdmin from './screens/SessionsAdmin'
+import CompaniesList from './screens/CompaniesList'
+import CompanyDetail from './screens/CompanyDetail'
+import GroupsList from './screens/GroupsList'
+import GroupDetail from './screens/GroupDetail'
 import Login from './screens/Login'
 import PublicLeaderboard from './screens/PublicLeaderboard'
 
@@ -14,6 +18,7 @@ const navStyle = {
   padding: '0.75rem 1.5rem',
   background: '#1a1d27',
   borderBottom: '1px solid #2a2d3a',
+  flexWrap: 'wrap',
 }
 
 const linkStyle = ({ isActive }) => ({
@@ -31,6 +36,8 @@ function AppShell() {
       <nav style={navStyle}>
         <NavLink to="/" style={linkStyle} end>Reception</NavLink>
         <NavLink to="/players" style={linkStyle}>Players</NavLink>
+        <NavLink to="/companies" style={linkStyle}>Companies</NavLink>
+        <NavLink to="/groups" style={linkStyle}>Groups</NavLink>
         <NavLink to="/sessions" style={linkStyle}>Sessions</NavLink>
         <NavLink to="/dashboard" style={linkStyle}>Dashboard</NavLink>
         <NavLink to="/settings" style={linkStyle}>Settings</NavLink>
@@ -39,9 +46,14 @@ function AppShell() {
         <Routes>
           <Route path="/" element={<ReceptionDesk />} />
           <Route path="/players" element={<PlayerAdmin />} />
+          <Route path="/companies" element={<CompaniesList />} />
+          <Route path="/companies/:id" element={<CompanyDetail />} />
+          <Route path="/groups" element={<GroupsList />} />
+          <Route path="/groups/:id" element={<GroupDetail />} />
           <Route path="/sessions" element={<SessionsAdmin />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </>
@@ -51,8 +63,6 @@ function AppShell() {
 export default function App() {
   const [authed, setAuthed] = useState(() => sessionStorage.getItem('rfid_auth') === '1')
 
-  // No-login public leaderboard -- checked BEFORE the auth gate, since the
-  // rest of the app is a single all-or-nothing gate with no per-route auth.
   if (window.location.pathname === '/leaderboard') {
     return <PublicLeaderboard />
   }

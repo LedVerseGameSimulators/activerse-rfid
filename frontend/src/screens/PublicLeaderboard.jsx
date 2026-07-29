@@ -11,28 +11,43 @@ export default function PublicLeaderboard() {
   const [game, setGame] = useState('all')
   const [period, setPeriod] = useState('today')
   const [board, setBoard] = useState('individual')
+  const [companyId, setCompanyId] = useState('')
+  const [companies, setCompanies] = useState([])
   const [rows, setRows] = useState([])
 
   const load = async () => {
-    const data = await api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}`)
+    const companyQ = companyId ? `&company_id=${companyId}` : ''
+    const [data, cos] = await Promise.all([
+      api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}${companyQ}`),
+      api('/companies'),
+    ])
     setRows(data)
+    setCompanies(cos)
   }
 
   useEffect(() => {
     load()
-    const t = setInterval(load, 30000)   // auto-refresh for a lobby screen
+    const t = setInterval(load, 30000)
     return () => clearInterval(t)
-  }, [game, period, board])
+  }, [game, period, board, companyId])
 
   return (
     <div style={page}>
-      <h1 style={title}>🏆 Leaderboard</h1>
+      <h1 style={title}>Leaderboard</h1>
       <div style={filters}>
         {['individual', 'team'].map(b => (
           <button key={b} style={board === b ? tabActive : tab} onClick={() => setBoard(b)}>
             {b === 'individual' ? 'Individual' : 'Team'}
           </button>
         ))}
+        <select
+          style={{ ...tab, background: companyId ? '#3b5bdb' : '#1a1d27', color: '#fff' }}
+          value={companyId}
+          onChange={e => setCompanyId(e.target.value)}
+        >
+          <option value="">All companies</option>
+          {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
         <div style={{ width: 12 }} />
         {GAMES.map(g => (
           <button key={g.key} style={game === g.key ? tabActive : tab} onClick={() => setGame(g.key)}>

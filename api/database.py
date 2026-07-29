@@ -224,17 +224,50 @@ class Database:
                         session_minutes    INTEGER,
                         pushed_at          TEXT
                     );
+
+                    CREATE TABLE IF NOT EXISTS companies (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name        TEXT UNIQUE NOT NULL,
+                        notes       TEXT DEFAULT '',
+                        created_at  TEXT
+                    );
+
+                    CREATE TABLE IF NOT EXISTS groups (
+                        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                        company_id        INTEGER NOT NULL,
+                        name              TEXT NOT NULL,
+                        leader_player_id  INTEGER,
+                        created_at        TEXT,
+                        UNIQUE(company_id, name)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS group_members (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        group_id   INTEGER NOT NULL,
+                        player_id  INTEGER NOT NULL,
+                        UNIQUE(group_id, player_id)
+                    );
                 """)
                 # Idempotent ALTERs for central_scores (existing DBs upgrading
                 # from the pre-per-player schema).
                 for _col, _typ in (("player_slot", "INTEGER"), ("end_level", "TEXT"),
                                    ("final_score", "REAL"), ("lives_start", "INTEGER"),
                                    ("levels_cleared", "INTEGER"), ("difficulty", "TEXT"),
-                                   ("started_at", "TEXT"), ("team_score_id", "INTEGER")):
+                                   ("started_at", "TEXT"), ("team_score_id", "INTEGER"),
+                                   ("company_id", "INTEGER")):
                     try:
                         con.execute(f"ALTER TABLE central_scores ADD COLUMN {_col} {_typ}")
                     except sqlite3.OperationalError:
                         pass
+                for _col, _typ in (("company_id", "INTEGER"), ("group_id", "INTEGER")):
+                    try:
+                        con.execute(f"ALTER TABLE player_sessions ADD COLUMN {_col} {_typ}")
+                    except sqlite3.OperationalError:
+                        pass
+                try:
+                    con.execute("ALTER TABLE central_team_scores ADD COLUMN company_id INTEGER")
+                except sqlite3.OperationalError:
+                    pass
                 # Optional columns on custom_info
                 for col, typ in (("email", "TEXT"), ("age", "INTEGER"), ("notes", "TEXT"),
                                 ("credit_balance", "REAL DEFAULT 0")):
@@ -794,14 +827,15 @@ class Database:
                     score.get("started_at", ""),
                     score.get("played_at"),
                     self._now_iso(),
+                    score.get("company_id"),
                 )
                 cur = con.execute(
                     "INSERT OR IGNORE INTO central_team_scores "
                     "(session_id, card_id, player_slot, game, level, end_level, "
                     "score, final_score, member_count, members_json, life, lives_start, "
                     "result, time_used, levels_cleared, difficulty, started_at, "
-                    "played_at, polled_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "played_at, polled_at, company_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params,
                 )
                 con.commit()
@@ -828,8 +862,8 @@ class Database:
             "INSERT OR IGNORE INTO central_scores "
             "(player_id, card_id, player_slot, session_id, team_score_id, game, level, end_level, "
             "score, final_score, life, lives_start, result, time_used, "
-            "levels_cleared, difficulty, started_at, played_at, polled_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "levels_cleared, difficulty, started_at, played_at, polled_at, company_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 score.get("player_id"),
                 score.get("card_id") or "",
@@ -850,6 +884,7 @@ class Database:
                 score.get("started_at", ""),
                 score.get("played_at"),
                 self._now_iso(),
+                score.get("company_id"),
             ),
         )
 
@@ -908,12 +943,16 @@ class Database:
         rows = self._execute("SELECT * FROM game_health ORDER BY game", fetch="all")
         return [dict(r) for r in rows] if rows else []
 
-    def get_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20):
+    def get_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20,
+                        company_id: Optional[int] = None):
         clauses = ["1=1"]
         params: list = []
         if game != "all":
             clauses.append("cs.game = ?")
             params.append(game)
+        if company_id is not None:
+            clauses.append("cs.company_id = ?")
+            params.append(company_id)
         now = datetime.now()
         if period == "today":
             clauses.append("cs.played_at >= ?")
@@ -936,12 +975,16 @@ class Database:
         )
         return [dict(r) for r in rows] if rows else []
 
-    def get_team_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20):
+    def get_team_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20,
+                             company_id: Optional[int] = None):
         clauses = ["cts.member_count >= 2"]
         params: list = []
         if game != "all":
             clauses.append("cts.game = ?")
             params.append(game)
+        if company_id is not None:
+            clauses.append("cts.company_id = ?")
+            params.append(company_id)
         now = datetime.now()
         if period == "today":
             clauses.append("cts.played_at >= ?")
@@ -962,6 +1005,160 @@ class Database:
             fetch="all",
         )
         return [dict(r) for r in rows] if rows else []
+
+    # ── Companies / groups (Phase B) ──────────────────────────────────────
+
+    def list_companies(self):
+        rows = self._execute(
+            "SELECT c.*, "
+            "(SELECT COUNT(*) FROM groups g WHERE g.company_id = c.id) AS group_count "
+            "FROM companies c ORDER BY c.name",
+            fetch="all",
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    def create_company(self, name: str, notes: str = ""):
+        cid = self._executemany_return_id(
+            "INSERT INTO companies (name, notes, created_at) VALUES (?, ?, ?)",
+            (name.strip(), notes or "", self._now_iso()),
+        )
+        return self.get_company(cid)
+
+    def get_company(self, company_id: int):
+        return self._row_to_dict(
+            self._execute("SELECT * FROM companies WHERE id = ?", (company_id,), fetch="one")
+        )
+
+    def get_company_by_name(self, name: str):
+        return self._row_to_dict(
+            self._execute(
+                "SELECT * FROM companies WHERE lower(name) = lower(?)",
+                (name.strip(),),
+                fetch="one",
+            )
+        )
+
+    def update_company(self, company_id: int, name: Optional[str] = None, notes: Optional[str] = None):
+        row = self.get_company(company_id)
+        if not row:
+            return None
+        self._execute(
+            "UPDATE companies SET name = ?, notes = ? WHERE id = ?",
+            (name if name is not None else row["name"],
+             notes if notes is not None else (row.get("notes") or ""),
+             company_id),
+        )
+        return self.get_company(company_id)
+
+    def delete_company(self, company_id: int):
+        groups = self.list_groups(company_id)
+        for g in groups:
+            self._execute("DELETE FROM group_members WHERE group_id = ?", (g["id"],))
+        self._execute("DELETE FROM groups WHERE company_id = ?", (company_id,))
+        return self._rowcount("DELETE FROM companies WHERE id = ?", (company_id,))
+
+    def list_groups(self, company_id: Optional[int] = None):
+        if company_id is not None:
+            rows = self._execute(
+                "SELECT g.*, c.name AS company_name, "
+                "(SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count "
+                "FROM groups g JOIN companies c ON c.id = g.company_id "
+                "WHERE g.company_id = ? ORDER BY g.name",
+                (company_id,),
+                fetch="all",
+            )
+        else:
+            rows = self._execute(
+                "SELECT g.*, c.name AS company_name, "
+                "(SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count "
+                "FROM groups g JOIN companies c ON c.id = g.company_id ORDER BY c.name, g.name",
+                fetch="all",
+            )
+        return [dict(r) for r in rows] if rows else []
+
+    def create_group(self, company_id: int, name: str, leader_player_id: Optional[int] = None):
+        gid = self._executemany_return_id(
+            "INSERT INTO groups (company_id, name, leader_player_id, created_at) VALUES (?, ?, ?, ?)",
+            (company_id, name.strip(), leader_player_id, self._now_iso()),
+        )
+        if leader_player_id:
+            self.add_group_member(gid, leader_player_id)
+        return self.get_group(gid)
+
+    def get_group(self, group_id: int):
+        return self._row_to_dict(
+            self._execute(
+                "SELECT g.*, c.name AS company_name FROM groups g "
+                "JOIN companies c ON c.id = g.company_id WHERE g.id = ?",
+                (group_id,),
+                fetch="one",
+            )
+        )
+
+    def get_group_by_company_name(self, company_id: int, name: str):
+        return self._row_to_dict(
+            self._execute(
+                "SELECT * FROM groups WHERE company_id = ? AND lower(name) = lower(?)",
+                (company_id, name.strip()),
+                fetch="one",
+            )
+        )
+
+    def update_group(self, group_id: int, name: Optional[str] = None,
+                     leader_player_id: Optional[int] = None):
+        row = self.get_group(group_id)
+        if not row:
+            return None
+        new_name = name.strip() if name is not None else row["name"]
+        new_leader = leader_player_id if leader_player_id is not None else row.get("leader_player_id")
+        self._execute(
+            "UPDATE groups SET name = ?, leader_player_id = ? WHERE id = ?",
+            (new_name, new_leader, group_id),
+        )
+        return self.get_group(group_id)
+
+    def delete_group(self, group_id: int):
+        self._execute("DELETE FROM group_members WHERE group_id = ?", (group_id,))
+        return self._rowcount("DELETE FROM groups WHERE id = ?", (group_id,))
+
+    def get_group_members(self, group_id: int):
+        rows = self._execute(
+            "SELECT gm.player_id, ci.name, ci.phone_num AS phone, "
+            "CASE WHEN g.leader_player_id = gm.player_id THEN 1 ELSE 0 END AS is_leader "
+            "FROM group_members gm "
+            "JOIN custom_info ci ON ci.custom_id = gm.player_id "
+            "JOIN groups g ON g.id = gm.group_id "
+            "WHERE gm.group_id = ? ORDER BY is_leader DESC, ci.name",
+            (group_id,),
+            fetch="all",
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    def add_group_member(self, group_id: int, player_id: int):
+        return self._rowcount(
+            "INSERT OR IGNORE INTO group_members (group_id, player_id) VALUES (?, ?)",
+            (group_id, player_id),
+        )
+
+    def remove_group_member(self, group_id: int, player_id: int):
+        return self._rowcount(
+            "DELETE FROM group_members WHERE group_id = ? AND player_id = ?",
+            (group_id, player_id),
+        )
+
+    def set_group_leader(self, group_id: int, player_id: int):
+        self.add_group_member(group_id, player_id)
+        self._execute(
+            "UPDATE groups SET leader_player_id = ? WHERE id = ?",
+            (player_id, group_id),
+        )
+        return self.get_group(group_id)
+
+    def set_session_org(self, session_id: int, company_id: Optional[int], group_id: Optional[int]):
+        self._execute(
+            "UPDATE player_sessions SET company_id = ?, group_id = ? WHERE id = ?",
+            (company_id, group_id, session_id),
+        )
 
     def get_stats(self):
         today = datetime.now().strftime("%Y-%m-%d")

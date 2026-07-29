@@ -5,18 +5,21 @@ Reception/admin hub for LED floor game kiosk.
 import asyncio
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from .config import API_HOST, API_PORT, GAME_REGISTRY
 from .database import get_db
-from . import players, sessions, dashboard
+from . import players, sessions, dashboard, companies, groups
 from . import poller as poller_mod
+from . import import_excel as import_excel_mod
 from .models import (
     PlayerCreate, PlayerUpdate, BindCardRequest, TopUpRequest,
     SessionCreate, SessionAdjust, LoginRequest, ChangePasswordRequest,
     GameSettingsPush, RosterAddRequest,
+    CompanyCreate, CompanyUpdate, GroupCreate, GroupUpdate,
+    GroupMemberAdd, GroupLeaderSet, StartVisitRequest,
 )
 
 app = FastAPI(title="Activerse RFID Server", version="1.0.0")
@@ -211,6 +214,100 @@ async def validate(card_id: str = Query(...)):
     return sessions.validate_card(get_db(), card_id)
 
 
+# ── Companies / Groups ────────────────────────────────────────────────────
+
+@app.get("/companies")
+async def list_companies():
+    return companies.list_companies(get_db())
+
+
+@app.post("/companies")
+async def create_company(body: CompanyCreate):
+    return companies.create_company(get_db(), body.name, body.notes or "")
+
+
+@app.get("/companies/{company_id}")
+async def get_company(company_id: int):
+    return companies.get_company(get_db(), company_id)
+
+
+@app.put("/companies/{company_id}")
+async def update_company(company_id: int, body: CompanyUpdate):
+    return companies.update_company(get_db(), company_id, name=body.name, notes=body.notes)
+
+
+@app.delete("/companies/{company_id}")
+async def delete_company(company_id: int):
+    return companies.delete_company(get_db(), company_id)
+
+
+@app.get("/groups")
+async def list_groups(company_id: int | None = Query(default=None)):
+    return groups.list_groups(get_db(), company_id)
+
+
+@app.post("/groups")
+async def create_group(body: GroupCreate):
+    return groups.create_group(get_db(), body.company_id, body.name, body.leader_player_id)
+
+
+@app.get("/groups/{group_id}")
+async def get_group(group_id: int):
+    return groups.get_group(get_db(), group_id)
+
+
+@app.put("/groups/{group_id}")
+async def update_group(group_id: int, body: GroupUpdate):
+    return groups.update_group(get_db(), group_id, name=body.name)
+
+
+@app.delete("/groups/{group_id}")
+async def delete_group(group_id: int):
+    return groups.delete_group(get_db(), group_id)
+
+
+@app.post("/groups/{group_id}/members")
+async def add_group_member(group_id: int, body: GroupMemberAdd):
+    return groups.add_member(
+        get_db(), group_id,
+        player_id=body.player_id, name=body.name, phone=body.phone,
+        email=body.email, age=body.age,
+    )
+
+
+@app.delete("/groups/{group_id}/members/{player_id}")
+async def remove_group_member(group_id: int, player_id: int):
+    return groups.remove_member(get_db(), group_id, player_id)
+
+
+@app.put("/groups/{group_id}/leader")
+async def set_group_leader(group_id: int, body: GroupLeaderSet):
+    return groups.set_leader(get_db(), group_id, body.player_id)
+
+
+@app.post("/groups/{group_id}/start-visit")
+async def start_group_visit(group_id: int, body: StartVisitRequest):
+    return groups.start_visit(get_db(), group_id, body.duration_min, body.card_id)
+
+
+# ── Excel import ──────────────────────────────────────────────────────────
+
+@app.get("/import/template.xlsx")
+async def download_import_template():
+    from fastapi.responses import Response
+    data = import_excel_mod.build_template_bytes()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=activerse_import_template.xlsx"},
+    )
+
+
+@app.post("/import/excel")
+async def import_excel(file: UploadFile = File(...)):
+    return import_excel_mod.import_excel(get_db(), file)
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────
 
 @app.get("/dashboard/health")
@@ -224,8 +321,9 @@ async def dash_leaderboard(
     period: str = Query(default="alltime"),
     limit: int = Query(default=20, le=100),
     board: str = Query(default="individual"),
+    company_id: int | None = Query(default=None),
 ):
-    return dashboard.get_leaderboard(get_db(), game, period, limit, board)
+    return dashboard.get_leaderboard(get_db(), game, period, limit, board, company_id)
 
 
 @app.get("/dashboard/stats")

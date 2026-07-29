@@ -59,6 +59,43 @@ class RosterAddRequest(BaseModel):
     player_id: int
 
 
+class CompanyCreate(BaseModel):
+    name: str
+    notes: Optional[str] = ""
+
+
+class CompanyUpdate(BaseModel):
+    name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class GroupCreate(BaseModel):
+    company_id: int
+    name: str
+    leader_player_id: Optional[int] = None
+
+
+class GroupUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class GroupMemberAdd(BaseModel):
+    player_id: Optional[int] = None
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    age: Optional[int] = None
+
+
+class GroupLeaderSet(BaseModel):
+    player_id: int
+
+
+class StartVisitRequest(BaseModel):
+    duration_min: int = Field(default=60, ge=1)
+    card_id: Optional[str] = None
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str

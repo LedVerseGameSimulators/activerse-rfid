@@ -7,26 +7,31 @@ export default function Dashboard() {
   const [health, setHealth] = useState([])
   const [leaderboard, setLeaderboard] = useState([])
   const [stats, setStats] = useState(null)
+  const [companies, setCompanies] = useState([])
   const [game, setGame] = useState('all')
   const [period, setPeriod] = useState('alltime')
   const [board, setBoard] = useState('individual')
+  const [companyId, setCompanyId] = useState('')
 
   const load = async () => {
     try {
-      const [h, lb, st] = await Promise.all([
+      const companyQ = companyId ? `&company_id=${companyId}` : ''
+      const [h, lb, st, cos] = await Promise.all([
         api('/dashboard/health'),
-        api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}`),
+        api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}${companyQ}`),
         api('/dashboard/stats'),
+        api('/companies'),
       ])
       setHealth(h)
       setLeaderboard(lb)
       setStats(st)
+      setCompanies(cos)
     } catch (e) {
       console.error(e)
     }
   }
 
-  useEffect(() => { load() }, [game, period, board])
+  useEffect(() => { load() }, [game, period, board, companyId])
 
   return (
     <div>
@@ -59,6 +64,10 @@ export default function Dashboard() {
               </button>
             ))}
           </div>
+          <select style={select} value={companyId} onChange={e => setCompanyId(e.target.value)}>
+            <option value="">All companies</option>
+            {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
           <select style={select} value={game} onChange={e => setGame(e.target.value)}>
             <option value="all">All Games</option>
             <option value="hoops">Hoops</option>

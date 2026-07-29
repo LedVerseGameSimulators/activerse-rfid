@@ -169,3 +169,14 @@ player's credit balance up front (no refund on early close or unused expiry).
   `/scores` endpoints, instead of waiting for the next `POLL_INTERVAL_SECONDS` (default
   120s) background cycle. Useful for testing the end-to-end score pipeline without
   waiting. Response: `{success: true}`.
+
+## Companies / Groups (Phase B)
+
+- `GET/POST /companies`, `GET/PUT/DELETE /companies/{id}`
+- `GET /groups?company_id=`, `POST /groups`, `GET/PUT/DELETE /groups/{id}`
+- `POST /groups/{id}/members` — `{player_id}` or `{name,phone}` (phone dedup into Players)
+- `DELETE /groups/{id}/members/{player_id}`
+- `PUT /groups/{id}/leader` `{player_id}`
+- `POST /groups/{id}/start-visit` `{duration_min, card_id?}` — issue session + load roster + stamp company/group
+- `GET /import/template.xlsx`, `POST /import/excel` (multipart file)
+- `GET /dashboard/leaderboard?...&company_id=` filters Individual/Team boards
