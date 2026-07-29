@@ -25,7 +25,11 @@ export default function ReceptionDesk() {
   const loadSession = async (player) => {
     try {
       const sessions = await api('/sessions/active')
-      const match = sessions.find(s => s.player_id === player.id)
+      // Match payer OR roster member so teammates see the open team session
+      const match = sessions.find(s =>
+        s.player_id === player.id ||
+        (Array.isArray(s.roster) && s.roster.some(m => m.player_id === player.id))
+      )
       setActiveSession(match || null)
     } catch {
       setActiveSession(null)
@@ -96,6 +100,7 @@ export default function ReceptionDesk() {
                 onAdjust={() => setShowAdjust(true)}
                 onBindCard={() => setShowBind(true)}
                 onTopUp={() => setShowTopUp(true)}
+                onRosterChanged={() => refresh()}
               />
             </div>
           )}

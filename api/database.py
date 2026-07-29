@@ -88,6 +88,10 @@ class Database:
         with self._lock:
             con = self._conn()
             try:
+                # Must run before CREATE IF NOT EXISTS central_scores, otherwise an
+                # interrupted rebuild (only central_scores_v2 left) would spawn an
+                # empty central_scores and the migrate step would drop v2.
+                self._recover_central_scores_v2(con)
                 # Legacy tables (same names/columns as original MySQL)
                 con.executescript("""
                     CREATE TABLE IF NOT EXISTS custom_info (
@@ -142,12 +146,44 @@ class Database:
                         adjusted_by TEXT
                     );
 
+                    CREATE TABLE IF NOT EXISTS session_roster (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id  INTEGER NOT NULL,
+                        player_id   INTEGER NOT NULL,
+                        UNIQUE(session_id, player_id)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS central_team_scores (
+                        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id     INTEGER,
+                        card_id        TEXT,
+                        player_slot    INTEGER,
+                        game           TEXT,
+                        level          TEXT,
+                        end_level      TEXT,
+                        score          REAL,
+                        final_score    REAL,
+                        member_count   INTEGER,
+                        members_json   TEXT,
+                        life           INTEGER,
+                        lives_start    INTEGER,
+                        result         INTEGER,
+                        time_used      REAL,
+                        levels_cleared INTEGER,
+                        difficulty     TEXT,
+                        started_at     TEXT,
+                        played_at      TEXT,
+                        polled_at      TEXT,
+                        UNIQUE(game, card_id, player_slot, level, played_at, score)
+                    );
+
                     CREATE TABLE IF NOT EXISTS central_scores (
                         id             INTEGER PRIMARY KEY AUTOINCREMENT,
                         player_id      INTEGER,
                         card_id        TEXT,
                         player_slot    INTEGER,   -- 1 or 2 (which player this row is)
                         session_id     INTEGER,
+                        team_score_id  INTEGER,
                         game           TEXT,
                         level          TEXT,
                         end_level      TEXT,
@@ -162,7 +198,7 @@ class Database:
                         started_at     TEXT,
                         played_at      TEXT,
                         polled_at      TEXT,
-                        UNIQUE(game, card_id, level, played_at, score)
+                        UNIQUE(game, card_id, player_id, level, played_at, score)
                     );
 
                     CREATE TABLE IF NOT EXISTS game_health (
@@ -194,7 +230,7 @@ class Database:
                 for _col, _typ in (("player_slot", "INTEGER"), ("end_level", "TEXT"),
                                    ("final_score", "REAL"), ("lives_start", "INTEGER"),
                                    ("levels_cleared", "INTEGER"), ("difficulty", "TEXT"),
-                                   ("started_at", "TEXT")):
+                                   ("started_at", "TEXT"), ("team_score_id", "INTEGER")):
                     try:
                         con.execute(f"ALTER TABLE central_scores ADD COLUMN {_col} {_typ}")
                     except sqlite3.OperationalError:
@@ -206,6 +242,9 @@ class Database:
                         con.execute(f"ALTER TABLE custom_info ADD COLUMN {col} {typ}")
                     except sqlite3.OperationalError:
                         pass
+                # Rebuild central_scores unique key so team split shares
+                # (same card/score, different player_id) do not collapse.
+                self._migrate_central_scores_unique(con)
                 # Seed default admin if empty
                 row = con.execute("SELECT COUNT(*) AS c FROM ledplay_login").fetchone()
                 if row["c"] == 0:
@@ -228,6 +267,81 @@ class Database:
                 con.commit()
             finally:
                 con.close()
+
+    @staticmethod
+    def _table_names(con):
+        return {
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+    @staticmethod
+    def _recover_central_scores_v2(con):
+        """If a prior UNIQUE rebuild left only central_scores_v2, rename it back."""
+        names = Database._table_names(con)
+        if "central_scores_v2" in names and "central_scores" not in names:
+            con.execute("ALTER TABLE central_scores_v2 RENAME TO central_scores")
+
+    @staticmethod
+    def _migrate_central_scores_unique(con):
+        """Ensure UNIQUE includes player_id (idempotent for fresh + old DBs)."""
+        names = Database._table_names(con)
+        # Leftover v2 from a failed rebuild while old central_scores still present.
+        if "central_scores_v2" in names and "central_scores" in names:
+            con.execute("DROP TABLE central_scores_v2")
+
+        row = con.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='central_scores'"
+        ).fetchone()
+        if not row or not row["sql"]:
+            return
+        norm = "".join(row["sql"].split())
+        if "UNIQUE(game,card_id,player_id,level,played_at,score)" in norm:
+            return
+        if "UNIQUE(game,card_id,level,played_at,score)" not in norm:
+            return
+
+        con.executescript("""
+            CREATE TABLE central_scores_v2 (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_id      INTEGER,
+                card_id        TEXT,
+                player_slot    INTEGER,
+                session_id     INTEGER,
+                team_score_id  INTEGER,
+                game           TEXT,
+                level          TEXT,
+                end_level      TEXT,
+                score          REAL,
+                final_score    REAL,
+                life           INTEGER,
+                lives_start    INTEGER,
+                result         INTEGER,
+                time_used      REAL,
+                levels_cleared INTEGER,
+                difficulty     TEXT,
+                started_at     TEXT,
+                played_at      TEXT,
+                polled_at      TEXT,
+                UNIQUE(game, card_id, player_id, level, played_at, score)
+            );
+            INSERT OR IGNORE INTO central_scores_v2 (
+                id, player_id, card_id, player_slot, session_id, team_score_id,
+                game, level, end_level, score, final_score, life, lives_start,
+                result, time_used, levels_cleared, difficulty, started_at,
+                played_at, polled_at
+            )
+            SELECT
+                id, player_id, card_id, player_slot, session_id,
+                team_score_id, game, level, end_level, score, final_score, life, lives_start,
+                result, time_used, levels_cleared, difficulty, started_at,
+                played_at, polled_at
+            FROM central_scores;
+            DROP TABLE central_scores;
+            ALTER TABLE central_scores_v2 RENAME TO central_scores;
+        """)
 
     @staticmethod
     def _now_iso() -> str:
@@ -365,6 +479,148 @@ class Database:
         )
         return sid, now, expiry
 
+    def issue_session_atomic(self, player_id: int, card_id: str, duration_min: int,
+                             notes: str = ""):
+        """Create session + seed roster + deduct credit under one lock/transaction.
+
+        Raises ValueError with a staff-facing message on conflict / insufficient credit.
+        Returns (session_id, issued_at, expiry_at, credit_balance_after).
+        """
+        from datetime import timedelta
+
+        with self._lock:
+            con = self._conn()
+            try:
+                now = self._now_iso()
+                # Already on any open roster?
+                busy = con.execute(
+                    "SELECT ps.id, ci.name AS player_name "
+                    "FROM session_roster sr "
+                    "JOIN player_sessions ps ON ps.id = sr.session_id "
+                    "JOIN custom_info ci ON ci.custom_id = ps.player_id "
+                    "WHERE sr.player_id = ? AND ps.closed_at IS NULL AND ps.expiry_at > ? "
+                    "ORDER BY ps.expiry_at DESC LIMIT 1",
+                    (player_id, now),
+                ).fetchone()
+                if busy:
+                    raise ValueError(
+                        f"Player is already on an active team/session "
+                        f"(session #{busy['id']}, holder {busy['player_name']}). "
+                        f"Remove them from that roster or close that session first."
+                    )
+                own = con.execute(
+                    "SELECT id FROM player_sessions WHERE player_id = ? "
+                    "AND closed_at IS NULL AND expiry_at > ? "
+                    "ORDER BY expiry_at DESC LIMIT 1",
+                    (player_id, now),
+                ).fetchone()
+                if own:
+                    raise ValueError(
+                        f"Player already has an open session #{own['id']}. Close it first."
+                    )
+
+                bal_row = con.execute(
+                    "SELECT credit_balance FROM custom_info WHERE custom_id = ?",
+                    (player_id,),
+                ).fetchone()
+                if not bal_row:
+                    raise ValueError("Player not found")
+                balance = float(bal_row["credit_balance"] or 0)
+                if balance < duration_min:
+                    raise ValueError(
+                        f"Insufficient credit balance: has {balance:.0f} min, "
+                        f"needs {duration_min} min. Top up first."
+                    )
+
+                expiry = (datetime.now() + timedelta(minutes=duration_min)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                cur = con.execute(
+                    "INSERT INTO player_sessions (player_id, card_id, issued_at, expiry_at, "
+                    "duration_min, notes) VALUES (?, ?, ?, ?, ?, ?)",
+                    (player_id, card_id or "", now, expiry, duration_min, notes),
+                )
+                sid = cur.lastrowid
+                con.execute(
+                    "UPDATE custom_info SET credit_balance = COALESCE(credit_balance, 0) - ? "
+                    "WHERE custom_id = ?",
+                    (duration_min, player_id),
+                )
+                con.execute(
+                    "INSERT OR IGNORE INTO session_roster (session_id, player_id) VALUES (?, ?)",
+                    (sid, player_id),
+                )
+                con.commit()
+                return sid, now, expiry, balance - duration_min
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
+
+    def add_roster_member_atomic(self, session_id: int, player_id: int):
+        """Add roster member with concurrency checks under one lock/transaction.
+
+        Raises ValueError with a staff-facing message on conflict.
+        """
+        with self._lock:
+            con = self._conn()
+            try:
+                session = con.execute(
+                    "SELECT * FROM player_sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not session:
+                    raise ValueError("Session not found")
+                if session["closed_at"]:
+                    raise ValueError("Session already closed")
+                now = self._now_iso()
+                if (session["expiry_at"] or "") <= now:
+                    raise ValueError("Session expired")
+
+                player = con.execute(
+                    "SELECT custom_id FROM custom_info WHERE custom_id = ?",
+                    (player_id,),
+                ).fetchone()
+                if not player:
+                    raise ValueError("Player not found")
+
+                other = con.execute(
+                    "SELECT ps.id, ci.name AS player_name "
+                    "FROM session_roster sr "
+                    "JOIN player_sessions ps ON ps.id = sr.session_id "
+                    "JOIN custom_info ci ON ci.custom_id = ps.player_id "
+                    "WHERE sr.player_id = ? AND ps.closed_at IS NULL AND ps.expiry_at > ? "
+                    "ORDER BY ps.expiry_at DESC LIMIT 1",
+                    (player_id, now),
+                ).fetchone()
+                if other and other["id"] != session_id:
+                    raise ValueError(
+                        f"Player is already on another active team/session "
+                        f"(session #{other['id']}, holder {other['player_name']})."
+                    )
+                own = con.execute(
+                    "SELECT id FROM player_sessions WHERE player_id = ? "
+                    "AND closed_at IS NULL AND expiry_at > ? "
+                    "ORDER BY expiry_at DESC LIMIT 1",
+                    (player_id, now),
+                ).fetchone()
+                if own and own["id"] != session_id:
+                    raise ValueError(
+                        f"Player already has an open solo/payer session #{own['id']}. "
+                        f"Close it before adding them to a team."
+                    )
+
+                con.execute(
+                    "INSERT OR IGNORE INTO session_roster (session_id, player_id) VALUES (?, ?)",
+                    (session_id, player_id),
+                )
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
+
     def get_active_sessions(self):
         now = self._now_iso()
         rows = self._execute(
@@ -442,18 +698,144 @@ class Database:
         )
         return [dict(r) for r in rows] if rows else []
 
+    # ── Session roster (team members for score attribution) ───────────────
+
+    def add_roster_member(self, session_id: int, player_id: int):
+        return self._rowcount(
+            "INSERT OR IGNORE INTO session_roster (session_id, player_id) VALUES (?, ?)",
+            (session_id, player_id),
+        )
+
+    def remove_roster_member(self, session_id: int, player_id: int):
+        return self._rowcount(
+            "DELETE FROM session_roster WHERE session_id = ? AND player_id = ?",
+            (session_id, player_id),
+        )
+
+    def get_session_roster(self, session_id: int):
+        rows = self._execute(
+            "SELECT sr.player_id, ci.name, ci.phone_num AS phone, "
+            "CASE WHEN ps.player_id = sr.player_id THEN 1 ELSE 0 END AS is_payer "
+            "FROM session_roster sr "
+            "JOIN custom_info ci ON ci.custom_id = sr.player_id "
+            "JOIN player_sessions ps ON ps.id = sr.session_id "
+            "WHERE sr.session_id = ? "
+            "ORDER BY is_payer DESC, ci.name",
+            (session_id,),
+            fetch="all",
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    def get_open_roster_session_for_player(self, player_id: int):
+        """Return open session where this player appears on the roster (any role)."""
+        now = self._now_iso()
+        return self._row_to_dict(
+            self._execute(
+                "SELECT ps.*, ci.name AS player_name "
+                "FROM session_roster sr "
+                "JOIN player_sessions ps ON ps.id = sr.session_id "
+                "JOIN custom_info ci ON ci.custom_id = ps.player_id "
+                "WHERE sr.player_id = ? AND ps.closed_at IS NULL AND ps.expiry_at > ? "
+                "ORDER BY ps.expiry_at DESC LIMIT 1",
+                (player_id, now),
+                fetch="one",
+            )
+        )
+
+    def get_session_for_card_at(self, card_id: str, played_at: Optional[str]):
+        """Session that owned this card at played_at (for late poll / roster snapshot)."""
+        if not card_id:
+            return None
+        if played_at:
+            # Normalize common ISO 'T' separator
+            ts = played_at.replace("T", " ")[:19]
+            row = self._row_to_dict(
+                self._execute(
+                    "SELECT ps.*, ci.name AS player_name "
+                    "FROM player_sessions ps "
+                    "JOIN custom_info ci ON ci.custom_id = ps.player_id "
+                    "WHERE ps.card_id = ? AND ps.issued_at <= ? "
+                    "AND (ps.closed_at IS NULL OR ps.closed_at >= ?) "
+                    "ORDER BY ps.issued_at DESC LIMIT 1",
+                    (card_id, ts, ts),
+                    fetch="one",
+                )
+            )
+            if row:
+                return row
+        return self.get_active_session_by_card(card_id)
+
+    def upsert_central_team_score(self, score: dict) -> Optional[int]:
+        """Insert team total; return row id (existing or new).
+
+        Uses SELECT-by-unique-key after INSERT OR IGNORE because SQLite
+        lastrowid is unreliable on ignored conflicts.
+        """
+        with self._lock:
+            con = self._conn()
+            try:
+                params = (
+                    score.get("session_id"),
+                    score.get("card_id") or "",
+                    score.get("player_slot", 1),
+                    score["game"],
+                    score.get("level", ""),
+                    score.get("end_level", ""),
+                    score.get("score", 0),
+                    score.get("final_score", 0),
+                    score.get("member_count", 1),
+                    score.get("members_json", "[]"),
+                    score.get("life"),
+                    score.get("lives_start"),
+                    score.get("result"),
+                    score.get("time_used", 0),
+                    score.get("levels_cleared", 0),
+                    score.get("difficulty", ""),
+                    score.get("started_at", ""),
+                    score.get("played_at"),
+                    self._now_iso(),
+                )
+                cur = con.execute(
+                    "INSERT OR IGNORE INTO central_team_scores "
+                    "(session_id, card_id, player_slot, game, level, end_level, "
+                    "score, final_score, member_count, members_json, life, lives_start, "
+                    "result, time_used, levels_cleared, difficulty, started_at, "
+                    "played_at, polled_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params,
+                )
+                con.commit()
+                if cur.rowcount and cur.lastrowid:
+                    return cur.lastrowid
+                row = con.execute(
+                    "SELECT id FROM central_team_scores WHERE game=? AND card_id=? "
+                    "AND player_slot=? AND level=? AND played_at=? AND score=?",
+                    (
+                        score["game"],
+                        score.get("card_id") or "",
+                        score.get("player_slot", 1),
+                        score.get("level", ""),
+                        score.get("played_at"),
+                        score.get("score", 0),
+                    ),
+                ).fetchone()
+                return row["id"] if row else None
+            finally:
+                con.close()
+
     def upsert_central_score(self, score: dict):
         self._execute(
             "INSERT OR IGNORE INTO central_scores "
-            "(player_id, card_id, player_slot, session_id, game, level, end_level, "
+            "(player_id, card_id, player_slot, session_id, team_score_id, game, level, end_level, "
             "score, final_score, life, lives_start, result, time_used, "
             "levels_cleared, difficulty, started_at, played_at, polled_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 score.get("player_id"),
                 score.get("card_id") or "",
                 score.get("player_slot", 1),
                 score.get("session_id"),
+                score.get("team_score_id"),
                 score["game"],
                 score.get("level", ""),
                 score.get("end_level", ""),
@@ -548,7 +930,34 @@ class Database:
         rows = self._execute(
             f"SELECT cs.*, ci.name AS player_name FROM central_scores cs "
             f"LEFT JOIN custom_info ci ON ci.custom_id = cs.player_id "
-            f"WHERE {where} ORDER BY cs.score DESC LIMIT ?",
+            f"WHERE {where} ORDER BY COALESCE(cs.final_score, cs.score) DESC LIMIT ?",
+            tuple(params),
+            fetch="all",
+        )
+        return [dict(r) for r in rows] if rows else []
+
+    def get_team_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20):
+        clauses = ["cts.member_count >= 2"]
+        params: list = []
+        if game != "all":
+            clauses.append("cts.game = ?")
+            params.append(game)
+        now = datetime.now()
+        if period == "today":
+            clauses.append("cts.played_at >= ?")
+            params.append(now.strftime("%Y-%m-%d 00:00:00"))
+        elif period == "week":
+            from datetime import timedelta
+            clauses.append("cts.played_at >= ?")
+            params.append((now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S"))
+        elif period == "month":
+            clauses.append("cts.played_at >= ?")
+            params.append(now.strftime("%Y-%m-01 00:00:00"))
+        where = " AND ".join(clauses)
+        params.append(limit)
+        rows = self._execute(
+            f"SELECT cts.* FROM central_team_scores cts "
+            f"WHERE {where} ORDER BY COALESCE(cts.final_score, cts.score) DESC LIMIT ?",
             tuple(params),
             fetch="all",
         )
@@ -557,14 +966,36 @@ class Database:
     def get_stats(self):
         today = datetime.now().strftime("%Y-%m-%d")
         month = datetime.now().strftime("%Y-%m")
+        # Count team runs when present; fall back to distinct game+card+played_at
+        # so split individual rows do not inflate "games".
         games_today = self._execute(
-            "SELECT COUNT(*) AS c FROM central_scores WHERE played_at LIKE ?",
-            (f"{today}%",),
+            "SELECT COUNT(*) AS c FROM ("
+            "  SELECT 1 FROM central_team_scores WHERE played_at LIKE ? "
+            "  UNION ALL "
+            "  SELECT 1 FROM central_scores cs "
+            "  WHERE cs.played_at LIKE ? AND cs.team_score_id IS NULL "
+            "    AND NOT EXISTS ("
+            "      SELECT 1 FROM central_team_scores cts "
+            "      WHERE cts.game = cs.game AND cts.card_id = cs.card_id "
+            "        AND cts.played_at = cs.played_at"
+            "    )"
+            ")",
+            (f"{today}%", f"{today}%"),
             fetch="one",
         )
         games_month = self._execute(
-            "SELECT COUNT(*) AS c FROM central_scores WHERE played_at LIKE ?",
-            (f"{month}%",),
+            "SELECT COUNT(*) AS c FROM ("
+            "  SELECT 1 FROM central_team_scores WHERE played_at LIKE ? "
+            "  UNION ALL "
+            "  SELECT 1 FROM central_scores cs "
+            "  WHERE cs.played_at LIKE ? AND cs.team_score_id IS NULL "
+            "    AND NOT EXISTS ("
+            "      SELECT 1 FROM central_team_scores cts "
+            "      WHERE cts.game = cs.game AND cts.card_id = cs.card_id "
+            "        AND cts.played_at = cs.played_at"
+            "    )"
+            ")",
+            (f"{month}%", f"{month}%"),
             fetch="one",
         )
         unique_today = self._execute(

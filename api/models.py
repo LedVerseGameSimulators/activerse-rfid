@@ -52,6 +52,11 @@ class ValidateResponse(BaseModel):
     session_id: Optional[int] = None
     minutes_remaining: Optional[float] = None
     reason: Optional[str] = None
+    members: Optional[list] = None
+
+
+class RosterAddRequest(BaseModel):
+    player_id: int
 
 
 class LoginRequest(BaseModel):

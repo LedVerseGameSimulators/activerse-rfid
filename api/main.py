@@ -16,7 +16,7 @@ from . import poller as poller_mod
 from .models import (
     PlayerCreate, PlayerUpdate, BindCardRequest, TopUpRequest,
     SessionCreate, SessionAdjust, LoginRequest, ChangePasswordRequest,
-    GameSettingsPush,
+    GameSettingsPush, RosterAddRequest,
 )
 
 app = FastAPI(title="Activerse RFID Server", version="1.0.0")
@@ -190,6 +190,21 @@ async def close_session(session_id: int):
     return sessions.close_session(get_db(), session_id)
 
 
+@app.get("/sessions/{session_id}/roster")
+async def get_roster(session_id: int):
+    return sessions.get_roster(get_db(), session_id)
+
+
+@app.post("/sessions/{session_id}/roster")
+async def add_roster_member(session_id: int, body: RosterAddRequest):
+    return sessions.add_roster_member(get_db(), session_id, body.player_id)
+
+
+@app.delete("/sessions/{session_id}/roster/{player_id}")
+async def remove_roster_member(session_id: int, player_id: int):
+    return sessions.remove_roster_member(get_db(), session_id, player_id)
+
+
 @app.get("/validate")
 async def validate(card_id: str = Query(...)):
     """Called by game machines — no auth required."""
@@ -208,8 +223,9 @@ async def dash_leaderboard(
     game: str = Query(default="all"),
     period: str = Query(default="alltime"),
     limit: int = Query(default=20, le=100),
+    board: str = Query(default="individual"),
 ):
-    return dashboard.get_leaderboard(get_db(), game, period, limit)
+    return dashboard.get_leaderboard(get_db(), game, period, limit, board)
 
 
 @app.get("/dashboard/stats")

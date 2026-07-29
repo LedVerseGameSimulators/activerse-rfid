@@ -9,12 +9,13 @@ export default function Dashboard() {
   const [stats, setStats] = useState(null)
   const [game, setGame] = useState('all')
   const [period, setPeriod] = useState('alltime')
+  const [board, setBoard] = useState('individual')
 
   const load = async () => {
     try {
       const [h, lb, st] = await Promise.all([
         api('/dashboard/health'),
-        api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20`),
+        api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}`),
         api('/dashboard/stats'),
       ])
       setHealth(h)
@@ -25,7 +26,7 @@ export default function Dashboard() {
     }
   }
 
-  useEffect(() => { load() }, [game, period])
+  useEffect(() => { load() }, [game, period, board])
 
   return (
     <div>
@@ -46,7 +47,18 @@ export default function Dashboard() {
         </section>
       )}
       <section>
-        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {['individual', 'team'].map(b => (
+              <button
+                key={b}
+                style={board === b ? boardActive : boardBtn}
+                onClick={() => setBoard(b)}
+              >
+                {b === 'individual' ? 'Individual' : 'Team'}
+              </button>
+            ))}
+          </div>
           <select style={select} value={game} onChange={e => setGame(e.target.value)}>
             <option value="all">All Games</option>
             <option value="hoops">Hoops</option>
@@ -80,3 +92,5 @@ function Stat({ label, value }) {
 
 const select = { padding: '0.5rem', borderRadius: 6, border: '1px solid #2a2d3a', background: '#0f1117', color: '#e8eaed' }
 const btn = { padding: '0.5rem 1rem', background: '#3b5bdb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }
+const boardBtn = { padding: '0.5rem 1rem', background: '#1a1d27', color: '#9aa0a6', border: '1px solid #2a2d3a', borderRadius: 6, cursor: 'pointer' }
+const boardActive = { ...boardBtn, background: '#3b5bdb', color: '#fff', borderColor: '#3b5bdb' }

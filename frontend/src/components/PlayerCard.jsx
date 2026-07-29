@@ -1,8 +1,9 @@
-export default function PlayerCard({ player, activeSession, onIssue, onAdjust, onBindCard, onTopUp }) {
+import SessionRoster from './SessionRoster'
+
+export default function PlayerCard({ player, activeSession, onIssue, onAdjust, onBindCard, onTopUp, onRosterChanged }) {
   if (!player) return null
 
   const hasCard = Boolean(player.card_id)
-  const onboarded = hasCard && activeSession
   const creditBalance = player.credit_balance ?? 0
 
   return (
@@ -48,6 +49,7 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
           <button style={{ ...btnSm, marginTop: 8 }} onClick={() => onAdjust(activeSession)}>
             Adjust Session
           </button>
+          <SessionRoster sessionId={activeSession.id} onChanged={onRosterChanged} />
         </div>
       )}
 

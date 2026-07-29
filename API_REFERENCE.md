@@ -95,18 +95,31 @@ LAN app, not internet-facing.
 Session model is clock-based: issuing a session deducts the full duration from the
 player's credit balance up front (no refund on early close or unused expiry).
 
-- **`POST /sessions`** — issue a new session for a player.
+- **`POST /sessions`** — issue a new session for a player. Requires a bound RFID card;
+  seeds the payer onto `session_roster`. Deduct + create + roster seed are atomic.
   Body: `{player_id, duration_min=60, notes?}`.
   Response: `{session_id, player_id, card_id, issued_at, expiry_at, duration_min,
-  minutes_remaining, credit_balance_after}`. Error: `400` if balance < requested minutes,
-  `404` if player not found.
+  minutes_remaining, credit_balance_after, roster}`. Error: `400` if no card bound,
+  insufficient credit, or player already on an open session/roster; `404` if player
+  not found.
 
 - **`GET /sessions/active`** — list all currently-open sessions.
-  Response: array of session rows, each with `minutes_remaining` computed live.
+  Response: array of session rows, each with `minutes_remaining`, `roster`, and
+  `roster_count` computed live.
 
 - **`GET /sessions/{session_id}`** — single session detail.
-  Response: session row + `minutes_remaining` + `adjustments` (array of
-  add/subtract log entries for this session).
+  Response: session row + `minutes_remaining` + `adjustments` + `roster`.
+
+- **`GET /sessions/{session_id}/roster`** — team members for score attribution
+  (total ÷ N on poll). Response: `{session_id, roster: [{player_id, name, phone,
+  is_payer}]}`.
+
+- **`POST /sessions/{session_id}/roster`** — add a player to the session roster.
+  Body: `{player_id}`. Rejects if the player is already on another open roster/session.
+  Response: `{success: true, session_id, roster}`.
+
+- **`DELETE /sessions/{session_id}/roster/{player_id}`** — remove a non-payer roster
+  member. Cannot remove the session holder. Response: `{success: true, session_id, roster}`.
 
 - **`POST /sessions/{session_id}/adjust`** — add or subtract minutes from an active
   session's expiry.
@@ -119,7 +132,9 @@ player's credit balance up front (no refund on early close or unused expiry).
 
 - **`GET /validate?card_id=`** — **called by game machines, no auth.** Checks whether a
   scanned card has an active, non-expired session with enough time to start.
-  Response: `{valid: bool, player_name?, session_id?, minutes_remaining?, reason?}`.
+  Response: `{valid: bool, player_name?, session_id?, minutes_remaining?, reason?,
+  members?}`. On `valid: true`, `members` is `[{player_id, name}, ...]` (roster at
+  validate time; legacy sessions without a roster row are auto-seeded with the payer).
   `reason` values on `valid: false`: `no_card`, `card_not_found`, `no_active_session`,
   `expired`, `insufficient_time`.
 
@@ -131,11 +146,13 @@ player's credit balance up front (no refund on early close or unused expiry).
   recorded by the poller, not a live check). Response: array of `{game, status,
   last_checked, active_game_id}` rows.
 
-- **`GET /dashboard/leaderboard?game=all&period=alltime&limit=20`** — cross-game score
-  leaderboard. `game` filters to one game key or `all`; `period` is `alltime`, `today`,
-  `week`, or `month`; `limit` caps rows (max 100).
-  Response: array of score rows (from `central_scores`, joined with player name),
-  ordered by score descending.
+- **`GET /dashboard/leaderboard?game=all&period=alltime&limit=20&board=individual`** —
+  cross-game score leaderboard. `game` filters to one game key or `all`; `period` is
+  `alltime`, `today`, `week`, or `month`; `limit` caps rows (max 100).
+  `board=individual` (default) returns per-player share rows from `central_scores`
+  (joined with player name), ordered by `final_score`/`score` descending.
+  `board=team` returns multi-member runs from `central_team_scores` (`member_count >= 2`)
+  with parsed `members` and a joined `player_name` label.
 
 - **`GET /dashboard/stats`** — quick aggregate counters for the admin dashboard.
   Response: `{games_today, games_month, unique_players_today}`.

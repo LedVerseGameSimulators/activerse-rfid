@@ -1,8 +1,10 @@
 """
 Background poller — polls game APIs every POLL_INTERVAL_SECONDS.
 Pulls /health and /scores?since= from each game machine.
+Team roster: explode each card score into a team row + N equal shares.
 """
 import asyncio
+import json
 from datetime import datetime
 
 import httpx
@@ -15,9 +17,93 @@ _last_polled: dict[str, str] = {}
 _running = False
 
 
+def _effective_scores(raw, final):
+    """If final is missing/0 but raw present, use raw for both (hex gap)."""
+    try:
+        raw_f = float(raw or 0)
+    except (TypeError, ValueError):
+        raw_f = 0.0
+    try:
+        final_f = float(final or 0)
+    except (TypeError, ValueError):
+        final_f = 0.0
+    if final_f == 0 and raw_f != 0:
+        final_f = raw_f
+    return raw_f, final_f
+
+
+def _ingest_card_score(db: Database, ctx: dict, card_id: str, player_slot: int,
+                       raw_score, final_score):
+    raw_f, final_f = _effective_scores(raw_score, final_score)
+    cid = card_id or ""
+
+    session = db.get_session_for_card_at(cid, ctx.get("played_at")) if cid else None
+    sid = session["id"] if session else None
+
+    roster = db.get_session_roster(sid) if sid else []
+    if not roster and session:
+        roster = [{
+            "player_id": session["player_id"],
+            "name": session.get("player_name") or "",
+            "is_payer": 1,
+        }]
+    if not roster and cid:
+        players = db.search_custom_by_field("card_id", cid)
+        if players:
+            roster = [{
+                "player_id": players[0]["custom_id"],
+                "name": players[0].get("name") or "",
+                "is_payer": 1,
+            }]
+
+    n = max(len(roster), 1)
+    members_snap = [
+        {"player_id": m["player_id"], "name": m.get("name") or ""}
+        for m in roster
+    ] if roster else []
+
+    team_score_id = db.upsert_central_team_score({
+        **ctx,
+        "session_id": sid,
+        "card_id": cid or None,
+        "player_slot": player_slot,
+        "score": raw_f,
+        "final_score": final_f,
+        "member_count": n,
+        "members_json": json.dumps(members_snap),
+    })
+
+    share_raw = round(raw_f / n, 4)
+    share_final = round(final_f / n, 4)
+
+    if roster:
+        for m in roster:
+            db.upsert_central_score({
+                **ctx,
+                "player_id": m["player_id"],
+                "card_id": cid or None,
+                "player_slot": player_slot,
+                "session_id": sid,
+                "team_score_id": team_score_id,
+                "score": share_raw,
+                "final_score": share_final,
+            })
+    else:
+        # Guest / unknown card — single anonymous row
+        db.upsert_central_score({
+            **ctx,
+            "player_id": None,
+            "card_id": cid or None,
+            "player_slot": player_slot,
+            "session_id": sid,
+            "team_score_id": team_score_id,
+            "score": share_raw,
+            "final_score": share_final,
+        })
+
+
 async def _poll_game(db: Database, game: str, base_url: str):
     async with httpx.AsyncClient(timeout=10) as client:
-        # Health check
         try:
             resp = await client.get(f"{base_url}/health")
             data = resp.json()
@@ -31,7 +117,6 @@ async def _poll_game(db: Database, game: str, base_url: str):
             logger.warning(f"Health check failed for {game}: {e}")
             db.update_game_health(game, "down")
 
-        # Scores pull
         since = _last_polled.get(game) or db.get_poll_cursor(game) or "2000-01-01T00:00:00"
         try:
             resp = await client.get(f"{base_url}/scores", params={"since": since})
@@ -40,9 +125,7 @@ async def _poll_game(db: Database, game: str, base_url: str):
                 max_ts = since
                 for row in payload.get("scores") or []:
                     played_at = row.get("ts") or row.get("played_at")
-                    # Shared per-session context (same for both players).
                     ctx = {
-                        "session_id": None,
                         "game": game,
                         "level": row.get("level", ""),
                         "end_level": row.get("end_level", ""),
@@ -56,51 +139,27 @@ async def _poll_game(db: Database, game: str, base_url: str):
                         "played_at": played_at,
                     }
 
-                    def _lookup(cid):
-                        pid = sid = None
-                        if cid:
-                            players = db.search_custom_by_field("card_id", cid)
-                            if players:
-                                pid = players[0]["custom_id"]
-                                sess = db.get_active_session_by_card(cid)
-                                if sess:
-                                    sid = sess["id"]
-                        return pid, sid
+                    _ingest_card_score(
+                        db, ctx,
+                        row.get("card_id") or "",
+                        1,
+                        row.get("score", 0),
+                        row.get("final_score", 0),
+                    )
 
-                    # ── P1 row (always) ──
-                    c1 = row.get("card_id") or ""
-                    p1_id, s1 = _lookup(c1)
-                    db.upsert_central_score({
-                        **ctx,
-                        "player_id": p1_id,
-                        "card_id": c1 or None,
-                        "player_slot": 1,
-                        "session_id": s1,
-                        "score": row.get("score", 0),
-                        "final_score": row.get("final_score", 0),
-                    })
-
-                    # ── P2 row (only for a real 2P session) ──
                     if row.get("multiplayer") and (row.get("card_id2") or ""):
-                        c2 = row.get("card_id2") or ""
-                        p2_id, s2 = _lookup(c2)
-                        db.upsert_central_score({
-                            **ctx,
-                            "player_id": p2_id,
-                            "card_id": c2 or None,
-                            "player_slot": 2,
-                            "session_id": s2,
-                            "score": row.get("score2", 0),
-                            "final_score": row.get("final_score2", 0),
-                        })
+                        _ingest_card_score(
+                            db, ctx,
+                            row.get("card_id2") or "",
+                            2,
+                            row.get("score2", 0),
+                            row.get("final_score2", 0),
+                        )
 
                     if played_at and played_at > max_ts:
                         max_ts = played_at
                 if payload.get("scores"):
                     logger.info(f"Polled {len(payload['scores'])} scores from {game}")
-                # Advance cursor to the newest row ACTUALLY seen (immune to
-                # clock skew between this server and the game machine), and
-                # persist it so a central restart resumes instead of re-pulling.
                 _last_polled[game] = max_ts
                 db.set_poll_cursor(game, max_ts)
         except Exception as e:
@@ -122,7 +181,7 @@ async def poller_loop(db: Database):
         try:
             await poll_all(db)
         except Exception as e:
-            logger.error(f"Poller error: {e}")
+            logger.error(f"Poller cycle error: {e}")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 

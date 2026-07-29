@@ -10,10 +10,11 @@ const GAMES = [
 export default function PublicLeaderboard() {
   const [game, setGame] = useState('all')
   const [period, setPeriod] = useState('today')
+  const [board, setBoard] = useState('individual')
   const [rows, setRows] = useState([])
 
   const load = async () => {
-    const data = await api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20`)
+    const data = await api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}`)
     setRows(data)
   }
 
@@ -21,12 +22,18 @@ export default function PublicLeaderboard() {
     load()
     const t = setInterval(load, 30000)   // auto-refresh for a lobby screen
     return () => clearInterval(t)
-  }, [game, period])
+  }, [game, period, board])
 
   return (
     <div style={page}>
       <h1 style={title}>🏆 Leaderboard</h1>
       <div style={filters}>
+        {['individual', 'team'].map(b => (
+          <button key={b} style={board === b ? tabActive : tab} onClick={() => setBoard(b)}>
+            {b === 'individual' ? 'Individual' : 'Team'}
+          </button>
+        ))}
+        <div style={{ width: 12 }} />
         {GAMES.map(g => (
           <button key={g.key} style={game === g.key ? tabActive : tab} onClick={() => setGame(g.key)}>
             {g.label}
@@ -40,16 +47,32 @@ export default function PublicLeaderboard() {
         ))}
       </div>
       <div style={rankGrid}>
-        {rows.map((r, i) => (
-          <div key={i} style={row}>
-            <div style={rank}>{i + 1}</div>
-            <div style={{ flex: 1 }}>
-              <div style={playerName}>{r.player_name || r.card_id || 'Guest'}</div>
-              <div style={gameLine}>{r.game} · {r.level}</div>
+        {rows.map((r, i) => {
+          const memberNames = Array.isArray(r.members)
+            ? r.members.map(m => m.name || `#${m.player_id}`).filter(Boolean).join(', ')
+            : ''
+          const titleText = board === 'team'
+            ? (r.player_name || memberNames || r.card_id || 'Team')
+            : (r.player_name || r.card_id || 'Guest')
+          const meta = [
+            r.game,
+            r.level,
+            board === 'team' && r.member_count != null ? `${r.member_count} members` : null,
+          ].filter(Boolean).join(' · ')
+          return (
+            <div key={i} style={row}>
+              <div style={rank}>{i + 1}</div>
+              <div style={{ flex: 1 }}>
+                <div style={playerName}>{titleText}</div>
+                {board === 'team' && memberNames && memberNames !== titleText && (
+                  <div style={memberLine}>{memberNames}</div>
+                )}
+                <div style={gameLine}>{meta}</div>
+              </div>
+              <div style={scoreVal}>{r.score}</div>
             </div>
-            <div style={scoreVal}>{r.score}</div>
-          </div>
-        ))}
+          )
+        })}
         {rows.length === 0 && <p style={{ color: '#9aa0a6', textAlign: 'center' }}>No scores yet.</p>}
       </div>
     </div>
@@ -65,5 +88,6 @@ const rankGrid = { maxWidth: 700, margin: '0 auto', display: 'flex', flexDirecti
 const row = { display: 'flex', alignItems: 'center', gap: 16, background: '#1a1d27', padding: '1rem 1.5rem', borderRadius: 12 }
 const rank = { fontSize: '1.5rem', fontWeight: 700, color: '#3b5bdb', width: 40 }
 const playerName = { fontSize: '1.1rem', fontWeight: 600 }
+const memberLine = { fontSize: 13, color: '#c1c6ce', marginTop: 2 }
 const gameLine = { fontSize: 13, color: '#9aa0a6' }
 const scoreVal = { fontSize: '1.75rem', fontWeight: 700 }
