@@ -432,6 +432,17 @@ Our `database.py` ports all of this to SQLite with 4 new tables added.
 
 *This section is work for a future agent. Do not implement in Phase 1.*
 
+> **Status update (2026-07-30):** the Companies/Org Groups slice of this section
+> (schema + endpoints + screens below) has since been built — twice. First as
+> "Companies / Groups (Phase B)" (see `API_REFERENCE.md`), then reworked in a
+> **durable company-membership exit** that changed the schema this section
+> proposes. See inline ✅/❌/⚠️ annotations below for what actually shipped vs
+> what was speculated here and rejected. **`API_REFERENCE.md`'s "Companies /
+> Groups / Company Membership" section is the current source of truth** — this
+> section is left in place as historical context, not as an accurate spec.
+> Data migration, credit-system rethink, and analytics endpoints further down
+> are still untouched/speculative.
+
 ---
 
 ### Original Database Analysis
@@ -555,6 +566,24 @@ ALTER TABLE custom_info ADD COLUMN date_of_birth TEXT;
 ALTER TABLE custom_info ADD COLUMN created_at TEXT;
 ```
 
+> **What actually happened to this schema (2026-07-30):**
+> - **`companies`** — ✅ implemented (Phase B), but as `name TEXT UNIQUE NOT NULL, notes, created_at` —
+>   no `contact_name`/`contact_phone`/`contact_email` columns were ever added.
+> - **`org_groups`** — ⚠️ never created under this name. Phase B added a `groups` table instead
+>   (same shape, no `visit_date`). Its `company_id` was made `NOT NULL` at Phase B time — the
+>   nullable-for-walk-ins idea sketched right here sat unbuilt until the later exit rebuilt
+>   `groups.company_id` as nullable (SQLite table-rebuild migration) so a group can now have
+>   **no company at all** (e.g. a birthday-party team), exactly as this comment originally intended.
+> - **`group_members`** — ✅ implemented (Phase B) as `UNIQUE(group_id, player_id)` (many-to-many,
+>   matching this plan). The later exit tightened it further to `UNIQUE(player_id)` alone — a
+>   player can be on **at most one group at a time**, stricter than what's sketched here.
+> - **`custom_info.company_id` / `date_of_birth` ALTERs** — ❌ **rejected**, never added. The
+>   later exit needed "one company per player, independent of and durable across group
+>   deletion/recreation" — a column on `custom_info` can't cleanly express that without also
+>   duplicating group logic, so it introduced a dedicated **`company_members(company_id,
+>   player_id UNIQUE)`** join table instead. `custom_info.created_at` was also never added;
+>   `email`/`age`/`notes`/`credit_balance` were added instead, unrelated to this Phase 2 sketch.
+
 ---
 
 ### Lifetime Stats & Analytics Views
@@ -642,17 +671,29 @@ GET  /analytics/revenue?from=&to=     # sum of recharge_record.money in date ran
 GET  /analytics/active-now            # players with active session right now
 ```
 
+> **Companies/Groups block above — ✅ implemented, then extended well past this sketch**
+> (see `API_REFERENCE.md` for the live spec). Route names match (`/companies`, `/groups`,
+> not `/org-groups`); `POST /groups` body dropped `visit_date` (never used) but kept
+> `company_id` as **optional** — a walk-in group with no company is now a first-class case.
+> Added beyond this plan, none of it speculated here: `GET/DELETE
+> /companies/{id}/members[/{player_id}]` (durable roster, independent of any group),
+> `POST /groups/{id}/members/transfer` (atomic move between groups), `POST
+> /groups/{id}/start-visit` (all-or-nothing preflight issuing a session for a whole
+> team), `POST /companies/{id}/import/excel` (company-scoped bulk onboarding), and a
+> `group_id` filter on the leaderboard. The **Analytics** block right above (`lifetime`,
+> `top-players`, `revenue`, `active-now`) is untouched — still purely speculative.
+
 ---
 
 ### New Frontend Screens for Phase 2
 
-| Screen | Route | What it shows |
-|--------|-------|--------------|
-| Company Admin | `/companies` | List + create companies, view member players |
-| Group Admin | `/groups` | Create visit groups, assign players |
-| Player Profile | `/players/:id` | Full history: sessions, scores, recharge history, lifetime stats |
-| Analytics | `/analytics` | Revenue chart, top players per game, daily/weekly/monthly play counts |
-| Active Now | sidebar widget | Live: which players have active sessions right now |
+| Screen | Route | Status | What it shows |
+|--------|-------|--------|----------------|
+| Company Admin | `/companies`, `/companies/:id` | ✅ implemented, extended | List + create companies; detail page has Edit, Excel import, a durable **Players (company)** roster list (survives group deletion), and Groups |
+| Group Admin | `/groups`, `/groups/:id` | ✅ implemented, extended | List/filter (incl. walk-in-only) + create groups (company optional); detail page has members, add/register, per-member **move-to-group** transfer, and Start Visit |
+| Player Profile | `/players/:id` | ❌ not built | No dedicated detail route — `PlayerAdmin.jsx` is a flat table instead; `players` list/search responses do carry `company_id`/`group_id`/`company_name`/`group_name` badges now, but there's no per-player history page |
+| Analytics | `/analytics` | ❌ not built | Still speculative |
+| Active Now | sidebar widget | ❌ not built | Still speculative |
 
 ---
 
