@@ -19,7 +19,7 @@ from .models import (
     SessionCreate, SessionAdjust, LoginRequest, ChangePasswordRequest,
     GameSettingsPush, RosterAddRequest,
     CompanyCreate, CompanyUpdate, GroupCreate, GroupUpdate,
-    GroupMemberAdd, GroupLeaderSet, StartVisitRequest,
+    GroupMemberAdd, GroupMemberTransfer, GroupLeaderSet, StartVisitRequest,
 )
 
 app = FastAPI(title="Activerse RFID Server", version="1.0.0")
@@ -241,9 +241,20 @@ async def delete_company(company_id: int):
     return companies.delete_company(get_db(), company_id)
 
 
+@app.get("/companies/{company_id}/members")
+async def list_company_members(company_id: int):
+    return companies.list_members(get_db(), company_id)
+
+
+@app.delete("/companies/{company_id}/members/{player_id}")
+async def leave_company(company_id: int, player_id: int):
+    return companies.leave_company(get_db(), company_id, player_id)
+
+
 @app.get("/groups")
-async def list_groups(company_id: int | None = Query(default=None)):
-    return groups.list_groups(get_db(), company_id)
+async def list_groups(company_id: int | None = Query(default=None),
+                      walk_in_only: bool = Query(default=False)):
+    return groups.list_groups(get_db(), company_id, walk_in_only=walk_in_only)
 
 
 @app.post("/groups")
@@ -280,6 +291,11 @@ async def remove_group_member(group_id: int, player_id: int):
     return groups.remove_member(get_db(), group_id, player_id)
 
 
+@app.post("/groups/{group_id}/members/transfer")
+async def transfer_group_member(group_id: int, body: GroupMemberTransfer):
+    return groups.transfer_member(get_db(), group_id, body.player_id)
+
+
 @app.put("/groups/{group_id}/leader")
 async def set_group_leader(group_id: int, body: GroupLeaderSet):
     return groups.set_leader(get_db(), group_id, body.player_id)
@@ -308,6 +324,23 @@ async def import_excel(file: UploadFile = File(...)):
     return import_excel_mod.import_excel(get_db(), file)
 
 
+@app.get("/companies/{company_id}/import/template.xlsx")
+async def download_company_import_template(company_id: int):
+    from fastapi.responses import Response
+    companies.get_company(get_db(), company_id)  # raises 404 if missing
+    data = import_excel_mod.build_template_bytes_company_scoped()
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=activerse_import_template.xlsx"},
+    )
+
+
+@app.post("/companies/{company_id}/import/excel")
+async def import_excel_for_company(company_id: int, file: UploadFile = File(...)):
+    return import_excel_mod.import_excel_for_company(get_db(), company_id, file)
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────
 
 @app.get("/dashboard/health")
@@ -322,8 +355,9 @@ async def dash_leaderboard(
     limit: int = Query(default=20, le=100),
     board: str = Query(default="individual"),
     company_id: int | None = Query(default=None),
+    group_id: int | None = Query(default=None),
 ):
-    return dashboard.get_leaderboard(get_db(), game, period, limit, board, company_id)
+    return dashboard.get_leaderboard(get_db(), game, period, limit, board, company_id, group_id)
 
 
 @app.get("/dashboard/stats")

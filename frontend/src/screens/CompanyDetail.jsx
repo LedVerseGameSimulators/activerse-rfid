@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
-import { api, apiForm, templateUrl } from '../api'
+import { api, apiForm, companyTemplateUrl } from '../api'
 
 const td = { padding: '0.5rem' }
 const btn = { padding: '0.45rem 0.9rem', background: '#3b5bdb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }
@@ -16,6 +16,7 @@ export default function CompanyDetail() {
   const [groupName, setGroupName] = useState('')
   const [error, setError] = useState('')
   const [importReport, setImportReport] = useState(null)
+  const [members, setMembers] = useState([])
 
   const load = async () => {
     try {
@@ -23,6 +24,7 @@ export default function CompanyDetail() {
       setCompany(c)
       setName(c.name)
       setNotes(c.notes || '')
+      setMembers(await api(`/companies/${id}/members`))
       setError('')
     } catch (e) {
       setError(e.message)
@@ -61,7 +63,7 @@ export default function CompanyDetail() {
     const fd = new FormData()
     fd.append('file', file)
     try {
-      setImportReport(await apiForm('/import/excel', fd))
+      setImportReport(await apiForm(`/companies/${id}/import/excel`, fd))
       load()
     } catch (err) {
       setError(err.message)
@@ -73,6 +75,16 @@ export default function CompanyDetail() {
     try {
       await api(`/companies/${id}`, { method: 'DELETE' })
       nav('/companies')
+    } catch (err) {
+      alert(err.message)
+    }
+  }
+
+  const removeMember = async (playerId) => {
+    if (!confirm('Remove this player from the company?')) return
+    try {
+      await api(`/companies/${id}/members/${playerId}`, { method: 'DELETE' })
+      load()
     } catch (err) {
       alert(err.message)
     }
@@ -99,10 +111,11 @@ export default function CompanyDetail() {
       <div style={card}>
         <h2 style={{ fontSize: '1rem', marginBottom: 8 }}>Excel import</h2>
         <p style={{ color: '#9aa0a6', fontSize: 13 }}>
-          Columns: company_name, group_name, player_name, phone, is_team_leader, email, age
+          Columns: group_name, player_name, phone, is_team_leader, email, age.
+          Blank group_name onboards the player to this company without a team.
         </p>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <a href={templateUrl()} style={{ ...btn, textDecoration: 'none', display: 'inline-block' }}>Download template</a>
+          <a href={companyTemplateUrl(id)} style={{ ...btn, textDecoration: 'none', display: 'inline-block' }}>Download template</a>
           <input type="file" accept=".xlsx" onChange={onImport} />
         </div>
         {importReport && (
@@ -110,6 +123,40 @@ export default function CompanyDetail() {
             {JSON.stringify(importReport, null, 2)}
           </pre>
         )}
+      </div>
+
+      <div style={card}>
+        <h2 style={{ fontSize: '1rem', marginBottom: 8 }}>Players (company)</h2>
+        <p style={{ color: '#9aa0a6', fontSize: 13, marginBottom: 8 }}>
+          Durable roster — survives groups being deleted/remade.
+        </p>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid #2a2d3a', textAlign: 'left' }}>
+              <th style={{ ...td, color: '#9aa0a6' }}>Name</th>
+              <th style={{ ...td, color: '#9aa0a6' }}>Phone</th>
+              <th style={{ ...td, color: '#9aa0a6' }}>Group</th>
+              <th style={{ ...td, color: '#9aa0a6' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {members.map(m => (
+              <tr key={m.player_id} style={{ borderBottom: '1px solid #1a1d27' }}>
+                <td style={td}>{m.name}</td>
+                <td style={td}>{m.phone}</td>
+                <td style={td}>
+                  {m.group_id
+                    ? <Link to={`/groups/${m.group_id}`} style={{ color: '#74c0fc' }}>{m.group_name}</Link>
+                    : <span style={{ color: '#9aa0a6' }}>No group</span>}
+                </td>
+                <td style={td}>
+                  <button style={{ ...btn, background: '#ff6b6b', padding: '0.3rem 0.6rem' }}
+                    onClick={() => removeMember(m.player_id)}>Remove</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       <div style={card}>

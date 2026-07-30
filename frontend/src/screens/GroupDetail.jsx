@@ -19,10 +19,13 @@ export default function GroupDetail() {
   const [duration, setDuration] = useState(60)
   const [cardId, setCardId] = useState('')
   const [visitResult, setVisitResult] = useState(null)
+  const [allGroups, setAllGroups] = useState([])
 
   const load = async () => {
     try {
-      setGroup(await api(`/groups/${id}`))
+      const [g, groupsList] = await Promise.all([api(`/groups/${id}`), api('/groups')])
+      setGroup(g)
+      setAllGroups(groupsList.filter(x => x.id !== Number(id)))
       setError('')
     } catch (e) {
       setError(e.message)
@@ -87,6 +90,19 @@ export default function GroupDetail() {
     }
   }
 
+  const transferMember = async (playerId, destGroupId) => {
+    if (!destGroupId) return
+    try {
+      await api(`/groups/${destGroupId}/members/transfer`, {
+        method: 'POST',
+        body: JSON.stringify({ player_id: playerId }),
+      })
+      load()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
   const startVisit = async (e) => {
     e.preventDefault()
     try {
@@ -140,6 +156,18 @@ export default function GroupDetail() {
               )}
               {!m.is_leader && (
                 <button style={{ ...btn, background: '#5c1a1a', fontSize: 12 }} onClick={() => remove(m.player_id)}>Remove</button>
+              )}
+              {allGroups.length > 0 && (
+                <select
+                  style={{ ...input, width: 160, padding: '0.3rem 0.5rem', fontSize: 12 }}
+                  defaultValue=""
+                  onChange={e => transferMember(m.player_id, Number(e.target.value) || null)}
+                >
+                  <option value="">Move to group…</option>
+                  {allGroups.map(g => (
+                    <option key={g.id} value={g.id}>{g.name}{g.company_name ? ` (${g.company_name})` : ' (walk-in)'}</option>
+                  ))}
+                </select>
               )}
             </li>
           ))}

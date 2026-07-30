@@ -38,5 +38,24 @@ def update_company(db: Database, company_id: int, name: str = None, notes: str =
 def delete_company(db: Database, company_id: int):
     if not db.get_company(company_id):
         raise HTTPException(404, "Company not found")
-    db.delete_company(company_id)
+    try:
+        db.delete_company(company_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"success": True, "company_id": company_id}
+
+
+def list_members(db: Database, company_id: int):
+    if not db.get_company(company_id):
+        raise HTTPException(404, "Company not found")
+    return db.list_company_members(company_id)
+
+
+def leave_company(db: Database, company_id: int, player_id: int):
+    if not db.get_company(company_id):
+        raise HTTPException(404, "Company not found")
+    try:
+        db.remove_company_member(company_id, player_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, "company_id": company_id, "player_id": player_id}

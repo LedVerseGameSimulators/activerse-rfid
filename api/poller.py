@@ -72,11 +72,13 @@ def _ingest_card_score(db: Database, ctx: dict, card_id: str, player_slot: int,
         "member_count": n,
         "members_json": json.dumps(members_snap),
         "company_id": (session or {}).get("company_id"),
+        "group_id": (session or {}).get("group_id"),
     })
 
     share_raw = round(raw_f / n, 4)
     share_final = round(final_f / n, 4)
     company_id = (session or {}).get("company_id")
+    group_id = (session or {}).get("group_id")
 
     if roster:
         for m in roster:
@@ -90,6 +92,7 @@ def _ingest_card_score(db: Database, ctx: dict, card_id: str, player_slot: int,
                 "score": share_raw,
                 "final_score": share_final,
                 "company_id": company_id,
+                "group_id": group_id,
             })
     else:
         # Guest / unknown card — single anonymous row
@@ -103,6 +106,7 @@ def _ingest_card_score(db: Database, ctx: dict, card_id: str, player_slot: int,
             "score": share_raw,
             "final_score": share_final,
             "company_id": company_id,
+            "group_id": group_id,
         })
 
 

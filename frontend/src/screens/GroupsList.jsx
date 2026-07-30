@@ -6,6 +6,8 @@ const td = { padding: '0.5rem' }
 const btn = { padding: '0.45rem 0.9rem', background: '#3b5bdb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }
 const input = { padding: '0.5rem 0.75rem', borderRadius: 6, border: '1px solid #2a2d3a', background: '#0f1117', color: '#e8eaed' }
 
+const WALK_IN = '__walk_in__'
+
 export default function GroupsList() {
   const [companies, setCompanies] = useState([])
   const [companyId, setCompanyId] = useState('')
@@ -18,8 +20,9 @@ export default function GroupsList() {
     try {
       const cos = await api('/companies')
       setCompanies(cos)
-      if (!createCompanyId && cos[0]) setCreateCompanyId(String(cos[0].id))
-      const q = companyId ? `?company_id=${companyId}` : ''
+      let q = ''
+      if (companyId === WALK_IN) q = '?walk_in_only=true'
+      else if (companyId) q = `?company_id=${companyId}`
       setRows(await api(`/groups${q}`))
       setError('')
     } catch (e) {
@@ -34,7 +37,10 @@ export default function GroupsList() {
     try {
       await api('/groups', {
         method: 'POST',
-        body: JSON.stringify({ company_id: Number(createCompanyId), name }),
+        body: JSON.stringify({
+          company_id: createCompanyId ? Number(createCompanyId) : null,
+          name,
+        }),
       })
       setName('')
       load()
@@ -51,11 +57,13 @@ export default function GroupsList() {
         <label style={{ color: '#9aa0a6', marginRight: 8 }}>Filter company</label>
         <select style={input} value={companyId} onChange={e => setCompanyId(e.target.value)}>
           <option value="">All</option>
+          <option value={WALK_IN}>Walk-in (no company)</option>
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </div>
       <form onSubmit={create} style={{ display: 'flex', gap: 8, marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-        <select style={input} value={createCompanyId} onChange={e => setCreateCompanyId(e.target.value)} required>
+        <select style={input} value={createCompanyId} onChange={e => setCreateCompanyId(e.target.value)}>
+          <option value="">No company (walk-in)</option>
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <input style={input} placeholder="Group name" value={name} onChange={e => setName(e.target.value)} required />
@@ -73,7 +81,7 @@ export default function GroupsList() {
           {rows.map(g => (
             <tr key={g.id} style={{ borderBottom: '1px solid #1a1d27' }}>
               <td style={td}><Link to={`/groups/${g.id}`} style={{ color: '#74c0fc' }}>{g.name}</Link></td>
-              <td style={td}>{g.company_name}</td>
+              <td style={td}>{g.company_name || <span style={{ color: '#9aa0a6' }}>Walk-in</span>}</td>
               <td style={td}>{g.member_count ?? 0}</td>
               <td style={td}>{g.leader_player_id || '—'}</td>
             </tr>

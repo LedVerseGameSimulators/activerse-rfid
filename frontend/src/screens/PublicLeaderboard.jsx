@@ -12,13 +12,16 @@ export default function PublicLeaderboard() {
   const [period, setPeriod] = useState('today')
   const [board, setBoard] = useState('individual')
   const [companyId, setCompanyId] = useState('')
+  const [groupId, setGroupId] = useState('')
   const [companies, setCompanies] = useState([])
+  const [groups, setGroups] = useState([])
   const [rows, setRows] = useState([])
 
   const load = async () => {
     const companyQ = companyId ? `&company_id=${companyId}` : ''
+    const groupQ = groupId ? `&group_id=${groupId}` : ''
     const [data, cos] = await Promise.all([
-      api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}${companyQ}`),
+      api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}${companyQ}${groupQ}`),
       api('/companies'),
     ])
     setRows(data)
@@ -29,7 +32,13 @@ export default function PublicLeaderboard() {
     load()
     const t = setInterval(load, 30000)
     return () => clearInterval(t)
-  }, [game, period, board, companyId])
+  }, [game, period, board, companyId, groupId])
+
+  useEffect(() => {
+    setGroupId('')
+    if (!companyId) { setGroups([]); return }
+    api(`/groups?company_id=${companyId}`).then(setGroups).catch(() => setGroups([]))
+  }, [companyId])
 
   return (
     <div style={page}>
@@ -48,6 +57,16 @@ export default function PublicLeaderboard() {
           <option value="">All companies</option>
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
+        {companyId && groups.length > 0 && (
+          <select
+            style={{ ...tab, background: groupId ? '#3b5bdb' : '#1a1d27', color: '#fff' }}
+            value={groupId}
+            onChange={e => setGroupId(e.target.value)}
+          >
+            <option value="">All teams</option>
+            {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+        )}
         <div style={{ width: 12 }} />
         {GAMES.map(g => (
           <button key={g.key} style={game === g.key ? tabActive : tab} onClick={() => setGame(g.key)}>

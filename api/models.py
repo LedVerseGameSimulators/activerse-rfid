@@ -70,7 +70,7 @@ class CompanyUpdate(BaseModel):
 
 
 class GroupCreate(BaseModel):
-    company_id: int
+    company_id: Optional[int] = None
     name: str
     leader_player_id: Optional[int] = None
 
@@ -85,6 +85,10 @@ class GroupMemberAdd(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
     age: Optional[int] = None
+
+
+class GroupMemberTransfer(BaseModel):
+    player_id: int
 
 
 class GroupLeaderSet(BaseModel):

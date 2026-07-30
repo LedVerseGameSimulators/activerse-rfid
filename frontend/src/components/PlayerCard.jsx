@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import SessionRoster from './SessionRoster'
 
 export default function PlayerCard({ player, activeSession, onIssue, onAdjust, onBindCard, onTopUp, onRosterChanged }) {
@@ -5,6 +6,7 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
 
   const hasCard = Boolean(player.card_id)
   const creditBalance = player.credit_balance ?? 0
+  const onGroup = Boolean(player.group_id)
 
   return (
     <div style={cardStyle}>
@@ -12,6 +14,16 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
       <p style={muted}>Phone: {player.phone}</p>
       {player.email && <p style={muted}>Email: {player.email}</p>}
       {player.age != null && <p style={muted}>Age: {player.age}</p>}
+      {(player.company_id || player.group_id) && (
+        <p style={{ marginTop: 6 }}>
+          {player.company_id && <span style={badge}>{player.company_name}</span>}
+          {player.group_id && (
+            <Link to={`/groups/${player.group_id}`} style={{ ...badge, color: '#74c0fc', textDecoration: 'none' }}>
+              {player.group_name}
+            </Link>
+          )}
+        </p>
+      )}
 
       <div style={{
         marginTop: '1rem', padding: '0.75rem 1rem', borderRadius: 8,
@@ -53,7 +65,14 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
         </div>
       )}
 
-      {hasCard && !activeSession && (
+      {hasCard && !activeSession && onGroup && (
+        <p style={{ ...muted, marginTop: '1rem', color: '#fcc419' }}>
+          On team <Link to={`/groups/${player.group_id}`} style={{ color: '#fcc419' }}>{player.group_name}</Link> —
+          use Start Visit on that group instead of a solo session.
+        </p>
+      )}
+
+      {hasCard && !activeSession && !onGroup && (
         <button style={{ ...btnSm, marginTop: '1rem' }} onClick={() => onIssue(player)}>
           Issue Session
         </button>
@@ -80,3 +99,4 @@ function StatusLine({ done, label, detail }) {
 const cardStyle = { background: '#1a1d27', borderRadius: 12, padding: '1.25rem', border: '1px solid #2a2d3a' }
 const muted = { color: '#9aa0a6', fontSize: 14, marginTop: 4 }
 const btnSm = { padding: '0.5rem 1rem', background: '#3b5bdb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }
+const badge = { display: 'inline-block', fontSize: 12, padding: '2px 8px', borderRadius: 999, background: '#0f1117', color: '#9aa0a6', marginRight: 6 }

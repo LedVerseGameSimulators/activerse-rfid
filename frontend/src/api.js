@@ -33,3 +33,7 @@ export async function apiForm(path, formData) {
 export function templateUrl() {
   return `${BASE}/import/template.xlsx`
 }
+
+export function companyTemplateUrl(companyId) {
+  return `${BASE}/companies/${companyId}/import/template.xlsx`
+}

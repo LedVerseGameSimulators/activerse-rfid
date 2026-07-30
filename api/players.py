@@ -23,16 +23,27 @@ def _player_row_to_api(row: dict) -> dict:
     }
 
 
+def _apply_org_badges(db: Database, players_api: list) -> list:
+    org_map = db.get_company_group_map([p["id"] for p in players_api])
+    for p in players_api:
+        org = org_map.get(p["id"])
+        p["company_id"] = org["company_id"] if org else None
+        p["company_name"] = org["company_name"] if org else None
+        p["group_id"] = org["group_id"] if org else None
+        p["group_name"] = org["group_name"] if org else None
+    return players_api
+
+
 def list_players(db: Database, q: str = ""):
     rows = db.search_custom_multi(q) if q else db.list_all_custom_info()
-    return [_player_row_to_api(r) for r in rows]
+    return _apply_org_badges(db, [_player_row_to_api(r) for r in rows])
 
 
 def get_player(db: Database, player_id: int):
     rows = db.search_custom_tb_by_id(player_id)
     if not rows:
         raise HTTPException(404, "Player not found")
-    player = _player_row_to_api(rows[0])
+    player = _apply_org_badges(db, [_player_row_to_api(rows[0])])[0]
     sessions = db.get_sessions_for_player(player_id)
     scores = db._execute(
         "SELECT * FROM central_scores WHERE player_id = ? ORDER BY played_at DESC LIMIT 50",
