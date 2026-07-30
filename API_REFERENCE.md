@@ -170,13 +170,63 @@ player's credit balance up front (no refund on early close or unused expiry).
   120s) background cycle. Useful for testing the end-to-end score pipeline without
   waiting. Response: `{success: true}`.
 
-## Companies / Groups (Phase B)
+## Companies / Groups / Company Membership (Phase B + durable-membership exit)
+
+Core model: `company_members` is the **durable** roster (one company per player,
+`UNIQUE(player_id)`) — it survives groups being deleted and remade. `groups` are
+**temporary teams** inside one company, or **walk-in groups with no company at all**
+(`company_id` is nullable — e.g. a one-off birthday-party team). A player can be on at
+most one group at a time (`group_members` is `UNIQUE(player_id)`). Adding a player to a
+corporate group auto-joins them to that company; adding them to a walk-in group skips
+company checks entirely. While on a group, solo session issuance is blocked — Start
+Visit on the group is the only play path; leaving the group re-enables solo play (still
+a company member).
 
 - `GET/POST /companies`, `GET/PUT/DELETE /companies/{id}`
-- `GET /groups?company_id=`, `POST /groups`, `GET/PUT/DELETE /groups/{id}`
-- `POST /groups/{id}/members` — `{player_id}` or `{name,phone}` (phone dedup into Players)
+  - `DELETE` is blocked (`400`) if the company has an active (open) session.
+- `GET /companies/{id}/members` — durable company roster.
+  Response: array of `{player_id, name, phone, joined_at, group_id, group_name}` (the
+  last two are `null` if the player isn't currently on any group).
+- `DELETE /companies/{id}/members/{player_id}` — leave company. Auto-removes them from
+  their current group first if they have one and no active session; `400` if they have
+  an active session (close it first).
+- `GET /groups?company_id=&walk_in_only=` — `company_id` omitted returns all groups
+  (corporate + walk-in); `walk_in_only=true` returns only company-less groups.
+- `POST /groups` `{company_id?, name, leader_player_id?}` — `company_id` is optional;
+  omit/`null` for a walk-in group. Company-scoped groups still enforce unique name per
+  company; walk-in group names aren't deduped against anything.
+- `GET/PUT/DELETE /groups/{id}`
+  - `DELETE` is blocked (`400`) if the group has an active (open) session; on success it
+    only drops `group_members` — the player's `company_members` row is untouched.
+- `POST /groups/{id}/members` — `{player_id}` or `{name,phone}` (phone dedup into
+  Players). `400` if the player already belongs to a different company than the group,
+  or is already on a different group.
 - `DELETE /groups/{id}/members/{player_id}`
+- `POST /groups/{id}/members/transfer` `{player_id}` — atomic move from the player's
+  current group into group `{id}` (destination), single transaction (no
+  remove-then-add race). `400` if the player is the leader of their current group
+  (reassign leadership there first) or belongs to a different company than the
+  destination group.
 - `PUT /groups/{id}/leader` `{player_id}`
-- `POST /groups/{id}/start-visit` `{duration_min, card_id?}` — issue session + load roster + stamp company/group
-- `GET /import/template.xlsx`, `POST /import/excel` (multipart file)
-- `GET /dashboard/leaderboard?...&company_id=` filters Individual/Team boards
+- `POST /groups/{id}/start-visit` `{duration_min, card_id?}` — **all-or-nothing
+  preflight**: validates every member (same company as the group if it has one, no
+  conflicting open session, leader has enough credit + no card conflict) before writing
+  anything. On any failure, `400` with every failing reason listed, and nothing is
+  written (no partial session/roster/credit-deduction). On success: issues the session
+  on the leader's card, loads all members onto the roster (score split), stamps
+  `company_id`/`group_id` (company_id is `null` for a walk-in group).
+- `GET /import/template.xlsx`, `POST /import/excel` (multipart file) — legacy global
+  import, still wired but no longer used by any UI screen (superseded below).
+- `GET /companies/{id}/import/template.xlsx`, `POST /companies/{id}/import/excel`
+  (multipart file) — company-scoped import. Columns: `group_name, player_name, phone,
+  is_team_leader, email, age`. The company comes from the URL only — a stray
+  `company_name` column, if present, is ignored, never creates/targets a different
+  company. `group_name` is optional: blank onboards the player into `company_members`
+  only (no group), matching "guest list first, teams later". Idempotent — re-uploading
+  the same file creates zero duplicate rows. A row for a player already affiliated with
+  a different company surfaces as a per-row error, never creates a new company.
+- `GET /dashboard/leaderboard?...&company_id=&group_id=` — filters Individual/Team
+  boards by company and/or group (e.g. "Team Alpha vs Team Beta" within one company, or
+  a walk-in group's own board via `group_id` alone with no `company_id`). A solo session
+  by a company member not currently on any group also stamps `company_id` (no
+  `group_id`), so they still show up on the company's board.
