@@ -1,24 +1,18 @@
 # AGENT_SETUP_AND_RUN.md — Activerse RFID (Windows reception PC)
 
-**Audience:** an AI coding agent on **the RFID / reception Windows PC** — one-time
-setup today, then daily start/stop.
+**Audience:** an AI coding agent on **the RFID / reception Windows PC**.
 
-**First human interaction:** before any clone/diff, you **must ask** the human
-for the full path to the old on-machine codebase (or `NONE`). See Phase 1.
+## Mandatory first steps (before any install/clone/copy)
 
-**Repos:**
+1. **Read this entire file** (`AGENT_SETUP_AND_RUN.md`) end to end.  
+2. Skim `WINDOWS_ONSITE_HANDOFF.md` / `OPERATOR_GUIDE.md` / `ONSITE_LAN_INTEGRATION_PLAN.md` if present.  
+3. **Ask the human** for the OLD on-machine path (or `NONE`).  
+4. Clone/pull, audit, then **present results and wait for explicit confirmation**
+   before copying `.env`, committing, pushing, or starting the server.
 
-| Location | Role |
-|----------|------|
-| GitHub `main` | Going-forward **source of truth** for code |
-| This PC’s **old** install (if any) | Audit once today for machine-only fixes; keep `.env` |
-| `.env` on this PC | Game LAN IPs + admin password — preserve |
+**Hard rule:** no auto-keep of `.env` or auto-push. Wait for human OK.
 
-This repo has **no Git LFS level files**. Still audit code + any local data/assets
-the old install used. Game floors handle `.led` / `.ledb` LFS on their own PCs.
-
-Also read: `WINDOWS_ONSITE_HANDOFF.md`, `OPERATOR_GUIDE.md`,
-`ONSITE_LAN_INTEGRATION_PLAN.md`.
+This repo has **no Git LFS levels**. Game PCs handle `.led`/`.ledb` themselves.
 
 ---
 
@@ -36,50 +30,16 @@ Also read: `WINDOWS_ONSITE_HANDOFF.md`, `OPERATOR_GUIDE.md`,
 
 ---
 
-## One-time sync model (today only)
+## Phase 1 — Ask for OLD path (**deliberately**)
 
-```
-1. Pull GitHub main into NEW folder
-2. Find OLD reception install (if any)
-3. AUDIT: code (and any unique assets) only on OLD → report + push to main
-4. Keep .env (LAN IPs) from OLD
-5. After today: git pull main only
-```
+> What is the full path to the **existing / old** Activerse RFID install on this PC?  
+> If none, reply `NONE`.
 
-Do not silently discard OLD code diffs. If reception PC has a fix GitHub lacks,
-surface it and get it onto `main` before deleting OLD.
+Wait for the answer. Verify path if given. Do not guess.
 
 ---
 
-## Phase 0 — Prerequisites
-
-Git, Python 3.11, Node.js LTS on PATH. (No Git LFS required here.)
-
----
-
-## Phase 1 — Get the OLD reception codebase path from the human (**ask deliberately**)
-
-**Do not guess. Do not skip this. Do not invent a path.**
-
-Before cloning or diffing, **ask the human in chat**:
-
-> What is the full path to the **existing / old** Activerse RFID install on this PC  
-> (the codebase that was running at reception before today’s git clone)?  
-> Examples: `C:\activerse\activerse-rfid`, a Desktop extract.  
-> If there is **no** old install, reply `NONE`.
-
-Rules:
-
-1. Wait for their answer before Phase 2–3.  
-2. If they give a path: verify it exists. Record as `OLD_ROOT`.  
-3. If `NONE`: skip OLD vs NEW code audit; still clone + setup + create `.env`.  
-4. If wrong/empty: ask again — never guess.  
-
-**Do not delete `OLD_ROOT` until Phase 6 passes.**
-
----
-
-## Phase 2 — Clone GitHub `main`
+## Phase 2 — Clone `main`
 
 ```bat
 mkdir C:\activerse 2>nul
@@ -92,81 +52,37 @@ git pull
 
 ---
 
-## Phase 3 — ONE-TIME audit: OLD vs NEW
+## Phase 3 — Audit (read-only) then **WAIT for confirmation**
 
-```powershell
-$NEW = "C:\activerse\activerse-rfid"
-$OLD = "C:\path\to\OLD_ROOT"
-$Report = "C:\activerse\rfid-reconcile-report.txt"
-$dirs = @("api","frontend\src")
-$lines = @()
-$lines += "NEW tip: $(git -C $NEW rev-parse --short HEAD)"
-foreach ($d in $dirs) {
-  $oldDir = Join-Path $OLD $d
-  if (-not (Test-Path $oldDir)) { continue }
-  Get-ChildItem $oldDir -Recurse -File -Include *.py,*.jsx,*.js |
-    ForEach-Object {
-      $rel = $_.FullName.Substring($OLD.Length).TrimStart("\")
-      $counterpart = Join-Path $NEW $rel
-      if (-not (Test-Path $counterpart)) {
-        $lines += "ONLY_ON_MACHINE_CODE: $rel"
-      } else {
-        $h1 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
-        $h2 = (Get-FileHash $counterpart -Algorithm SHA256).Hash
-        if ($h1 -ne $h2) { $lines += "DIFFERS_CODE: $rel" }
-      }
-    }
-}
-# Optional: Excel import templates / static assets only on machine
-Get-ChildItem $OLD -Recurse -File -Include *.xlsx,*.csv,*.json -ErrorAction SilentlyContinue |
-  Where-Object { $_.FullName -notmatch '\\node_modules\\|\\data\\' } |
-  ForEach-Object {
-    $rel = $_.FullName.Substring($OLD.Length).TrimStart("\")
-    $counterpart = Join-Path $NEW $rel
-    if (-not (Test-Path $counterpart)) { $lines += "ONLY_ON_MACHINE_ASSET: $rel" }
-  }
-$lines | Tee-Object -FilePath $Report
-```
+Compare OLD vs NEW for `api\`, `frontend\src\`. Note `.env` as a venue candidate only.
 
-| Finding | Action |
-|---------|--------|
-| Clean / only `.env` diffs | Prefer NEW; keep OLD `.env` |
-| `ONLY_ON_MACHINE_CODE` / `DIFFERS_CODE` | Port into NEW → commit → **push `main`** before deleting OLD |
-| `ONLY_ON_MACHINE_ASSET` | If needed for ops, add + push; else ignore |
-| `.env` | Copy OLD → NEW if validated; else `.env.example` → edit |
+Present in chat:
 
-Do **not** commit live `data\*.sqlite` or secrets.
+1. NEW tip  
+2. `ONLY_ON_MACHINE_CODE` / `DIFFERS_CODE`  
+3. Whether OLD `.env` exists (do **not** paste secrets; say “OLD .env present” + list **keys** only)  
+4. Numbered proposed actions  
+5. Ask: “Confirm which actions to apply. I will not copy/commit/push/start until you confirm.”
+
+Only after confirmation: port approved code and push; copy/create `.env` as approved.
+
+Do not commit `data\*.sqlite` or secrets.
 
 ---
 
-## Phase 4 — Install
+## Phase 4–5 — Install / run (after human OK)
 
-```bat
-SETUP_FIRST_TIME.bat
-```
-
-Edit `.env`: `ADMIN_PASSWORD` + five `*_API=` LAN URLs.
-
----
-
-## Phase 5 — Run
-
-```bat
-START_SERVER.bat
-```
-
-UI `http://localhost:5180` — Stop: `STOP_SERVER.bat`.
+`SETUP_FIRST_TIME.bat` then `START_SERVER.bat` → `http://localhost:5180`.  
+Stop: `STOP_SERVER.bat`.
 
 ---
 
 ## Phase 6 — Done
 
-- [ ] `main` pulled  
-- [ ] One-time report cleared (no unresolved machine-only code)  
-- [ ] `.env` correct  
-- [ ] START / STOP work; game PCs can hit `:9000`  
+- [ ] This file read first  
+- [ ] OLD path asked  
+- [ ] Audit shown; human confirmed  
+- [ ] Approved actions applied  
+- [ ] Server starts  
 
 Later: `git pull origin main` only.
-
-**Note:** Level / LFS reconciliation happens on each **game** PC via that repo’s
-`AGENT_SETUP_AND_RUN.md` (`.led` / `.ledb` → Git LFS). Not on this machine.
