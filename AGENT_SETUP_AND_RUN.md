@@ -3,6 +3,9 @@
 **Audience:** an AI coding agent on **the RFID / reception Windows PC** — one-time
 setup today, then daily start/stop.
 
+**First human interaction:** before any clone/diff, you **must ask** the human
+for the full path to the old on-machine codebase (or `NONE`). See Phase 1.
+
 **Repos:**
 
 | Location | Role |
@@ -54,9 +57,25 @@ Git, Python 3.11, Node.js LTS on PATH. (No Git LFS required here.)
 
 ---
 
-## Phase 1 — Find OLD install
+## Phase 1 — Get the OLD reception codebase path from the human (**ask deliberately**)
 
-Common: `C:\activerse\activerse-rfid`, Desktop extracts. Record `OLD_ROOT`.
+**Do not guess. Do not skip this. Do not invent a path.**
+
+Before cloning or diffing, **ask the human in chat**:
+
+> What is the full path to the **existing / old** Activerse RFID install on this PC  
+> (the codebase that was running at reception before today’s git clone)?  
+> Examples: `C:\activerse\activerse-rfid`, a Desktop extract.  
+> If there is **no** old install, reply `NONE`.
+
+Rules:
+
+1. Wait for their answer before Phase 2–3.  
+2. If they give a path: verify it exists. Record as `OLD_ROOT`.  
+3. If `NONE`: skip OLD vs NEW code audit; still clone + setup + create `.env`.  
+4. If wrong/empty: ask again — never guess.  
+
+**Do not delete `OLD_ROOT` until Phase 6 passes.**
 
 ---
 
