@@ -137,6 +137,8 @@ async def _poll_game(db: Database, game: str, base_url: str):
                         "game": game,
                         "level": row.get("level", ""),
                         "end_level": row.get("end_level", ""),
+                        "level_file": row.get("level_file", ""),
+                        "end_level_file": row.get("end_level_file", ""),
                         "life": row.get("life"),
                         "lives_start": row.get("lives_start"),
                         "result": row.get("result"),

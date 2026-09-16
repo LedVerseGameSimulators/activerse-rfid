@@ -163,6 +163,8 @@ class Database:
                         game           TEXT,
                         level          TEXT,
                         end_level      TEXT,
+                        level_file     TEXT,
+                        end_level_file TEXT,
                         score          REAL,
                         final_score    REAL,
                         member_count   INTEGER,
@@ -189,6 +191,8 @@ class Database:
                         game           TEXT,
                         level          TEXT,
                         end_level      TEXT,
+                        level_file     TEXT,
+                        end_level_file TEXT,
                         score          REAL,      -- this player's RAW score
                         final_score    REAL,      -- this player's NORMALIZED score
                         life           INTEGER,
@@ -263,6 +267,7 @@ class Database:
                 # Idempotent ALTERs for central_scores (existing DBs upgrading
                 # from the pre-per-player schema).
                 for _col, _typ in (("player_slot", "INTEGER"), ("end_level", "TEXT"),
+                                   ("level_file", "TEXT"), ("end_level_file", "TEXT"),
                                    ("final_score", "REAL"), ("lives_start", "INTEGER"),
                                    ("levels_cleared", "INTEGER"), ("difficulty", "TEXT"),
                                    ("started_at", "TEXT"), ("team_score_id", "INTEGER"),
@@ -276,9 +281,10 @@ class Database:
                         con.execute(f"ALTER TABLE player_sessions ADD COLUMN {_col} {_typ}")
                     except sqlite3.OperationalError:
                         pass
-                for _col in ("company_id", "group_id"):
+                for _col in ("company_id", "group_id", "level_file", "end_level_file", "end_level"):
                     try:
-                        con.execute(f"ALTER TABLE central_team_scores ADD COLUMN {_col} INTEGER")
+                        con.execute(f"ALTER TABLE central_team_scores ADD COLUMN {_col} "
+                                    f"{'INTEGER' if _col in ('company_id', 'group_id') else 'TEXT'}")
                     except sqlite3.OperationalError:
                         pass
                 # Optional columns on custom_info
@@ -1094,6 +1100,8 @@ class Database:
                     score["game"],
                     score.get("level", ""),
                     score.get("end_level", ""),
+                    score.get("level_file", ""),
+                    score.get("end_level_file", ""),
                     score.get("score", 0),
                     score.get("final_score", 0),
                     score.get("member_count", 1),
@@ -1113,10 +1121,11 @@ class Database:
                 cur = con.execute(
                     "INSERT OR IGNORE INTO central_team_scores "
                     "(session_id, card_id, player_slot, game, level, end_level, "
+                    "level_file, end_level_file, "
                     "score, final_score, member_count, members_json, life, lives_start, "
                     "result, time_used, levels_cleared, difficulty, started_at, "
                     "played_at, polled_at, company_id, group_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params,
                 )
                 con.commit()
@@ -1142,9 +1151,10 @@ class Database:
         self._execute(
             "INSERT OR IGNORE INTO central_scores "
             "(player_id, card_id, player_slot, session_id, team_score_id, game, level, end_level, "
+            "level_file, end_level_file, "
             "score, final_score, life, lives_start, result, time_used, "
             "levels_cleared, difficulty, started_at, played_at, polled_at, company_id, group_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 score.get("player_id"),
                 score.get("card_id") or "",
@@ -1154,6 +1164,8 @@ class Database:
                 score["game"],
                 score.get("level", ""),
                 score.get("end_level", ""),
+                score.get("level_file", ""),
+                score.get("end_level_file", ""),
                 score.get("score", 0),
                 score.get("final_score", 0),
                 score.get("life"),
