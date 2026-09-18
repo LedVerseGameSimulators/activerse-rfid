@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export ACTIVERSE_KIOSK=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 

@@ -1,9 +1,11 @@
 @echo off
 setlocal EnableExtensions
-title Activerse RFID Launcher
 cd /d "%~dp0"
 set "ROOT=%CD%"
 
+if not defined ACTIVERSE_KIOSK set "ACTIVERSE_KIOSK=1"
+
+title Activerse RFID - Starting
 echo.
 echo ==========================================
 echo       ACTIVERSE RFID - START SERVER
@@ -68,26 +70,50 @@ call "%ROOT%\STOP_SERVER.bat" /quiet
 ping -n 2 127.0.0.1 >nul
 
 echo Starting RFID API on port 9000...
-start "Activerse RFID API" /min cmd.exe /k "cd /d %ROOT% && python -m api.main"
+start "Activerse RFID API" /MIN /D "%ROOT%" cmd /k "python -m api.main"
+ping -n 3 127.0.0.1 >nul
 
-echo Starting RFID UI on port 5180...
-start "Activerse RFID UI" /min cmd.exe /k "cd /d %ROOT%\frontend && npm run dev -- --port 5180 --strictPort"
+echo Starting RFID UI (port 5180)...
+set "WINDOW_TITLE_UI=Activerse RFID UI"
+call "%ROOT%\scripts\kiosk\run-ui-prod.bat" 5180
+if errorlevel 1 goto :failed
+ping -n 3 127.0.0.1 >nul
 
-echo Waiting for services...
-timeout /t 5 /nobreak >nul
+echo Waiting for RFID UI...
+set /a _tries=0
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r=Invoke-WebRequest -UseBasicParsing 'http://localhost:9000/health' -TimeoutSec 3; if ($r.StatusCode -ne 200) { exit 1 } } catch { exit 1 }" >nul 2>&1
+:wait_ui
+set /a _tries+=1
+powershell -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.0.1:5180/' -UseBasicParsing -TimeoutSec 2).StatusCode } catch { exit 1 }" >nul 2>&1
+if not errorlevel 1 goto ui_ready
+if %_tries% GEQ 30 goto ui_timeout
+ping -n 2 127.0.0.1 >nul
+goto wait_ui
+
+:ui_timeout
+echo WARNING: UI did not respond yet. Opening browser anyway.
+goto check_api
+
+:ui_ready
+echo RFID UI is ready.
+
+:check_api
+echo Checking API health...
+powershell -NoProfile -Command "try { $r=Invoke-WebRequest -UseBasicParsing 'http://localhost:9000/health' -TimeoutSec 3; if ($r.StatusCode -ne 200) { exit 1 } } catch { exit 1 }" >nul 2>&1
 if errorlevel 1 (
     echo WARNING: /health not confirmed yet. Check the RFID API window.
-    echo Opening UI anyway...
 )
 
+call "%ROOT%\scripts\kiosk\open-ui.bat" 5180 rfid
+
 echo.
-echo RFID server is ready.
-echo Opening http://localhost:5180
+echo ========================================
+echo   ACTIVERSE RFID is running
+echo   Open:  http://127.0.0.1:5180/
+echo   Ctrl+Shift+K exits fullscreen kiosk
+echo   To stop: double-click STOP_SERVER.bat
+echo ========================================
 echo.
-start "" "http://localhost:5180"
-timeout /t 2 /nobreak >nul
 exit /b 0
 
 :failed

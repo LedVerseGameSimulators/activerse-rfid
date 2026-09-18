@@ -12,9 +12,14 @@ if /i not "%QUIET%"=="/quiet" (
   echo.
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ports=9000,5180; Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $ports -contains $_.LocalPort } | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 taskkill /FI "WINDOWTITLE eq Activerse RFID API*" /T /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq Activerse RFID UI*" /T /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Activerse Kiosk Exit*" /T /F >nul 2>&1
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\kiosk\kill-kiosk-browser.ps1" -ProfileSlug rfid
+
+powershell -NoProfile -Command ^
+  "foreach ($p in 9000,5180) { Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue } }" >nul 2>&1
 
 if /i "%QUIET%"=="/quiet" (
   endlocal
@@ -22,6 +27,9 @@ if /i "%QUIET%"=="/quiet" (
 )
 
 echo.
-echo RFID server has stopped.
-timeout /t 2 /nobreak >nul
+echo RFID server has stopped. Ports 9000 / 5180 are free.
+echo You can close this window.
+echo.
+pause
+endlocal
 exit /b 0
