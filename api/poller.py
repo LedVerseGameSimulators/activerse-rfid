@@ -4,6 +4,7 @@ Pulls /health and /scores?since= from each game machine.
 Team roster: explode each card score into a team row + N equal shares.
 """
 import asyncio
+import hashlib
 import json
 from datetime import datetime
 
@@ -32,38 +33,145 @@ def _effective_scores(raw, final):
     return raw_f, final_f
 
 
-def _ingest_card_score(db: Database, ctx: dict, card_id: str, player_slot: int,
-                       raw_score, final_score):
-    raw_f, final_f = _effective_scores(raw_score, final_score)
+def _parse_roster_player_ids(value):
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [int(x) for x in value]
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            logger.warning(f"Invalid roster_player_ids JSON: {e!r}")
+            return None
+        if isinstance(parsed, list):
+            return [int(x) for x in parsed]
+    return None
+
+
+def _match_key(game: str, played_at: str, card_id: str, card_id2: str) -> str:
+    payload = f"{game}|{played_at or ''}|{card_id}|{card_id2}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _resolve_card_context(
+    db: Database,
+    card_id: str,
+    played_at: str,
+    stamped_session_id,
+    stamped_group_id,
+    roster_size_at_play,
+    roster_player_ids_raw,
+):
+    """Resolve session, group, roster snapshot, and N for one card slot."""
     cid = card_id or ""
+    roster_ids = _parse_roster_player_ids(roster_player_ids_raw)
 
-    session = db.get_session_for_card_at(cid, ctx.get("played_at")) if cid else None
-    sid = session["id"] if session else None
+    session = None
+    if stamped_session_id is not None:
+        session = db.get_session(stamped_session_id)
+    if session is None and cid:
+        session = db.get_session_for_card_at(cid, played_at)
 
-    roster = db.get_session_roster(sid) if sid else []
-    if not roster and session:
-        roster = [{
-            "player_id": session["player_id"],
-            "name": session.get("player_name") or "",
-            "is_payer": 1,
-        }]
-    if not roster and cid:
-        players = db.search_custom_by_field("card_id", cid)
-        if players:
-            roster = [{
-                "player_id": players[0]["custom_id"],
-                "name": players[0].get("name") or "",
-                "is_payer": 1,
-            }]
+    if session:
+        sid = session["id"]
+        group_id = stamped_group_id
+        if group_id is None:
+            group_id = session.get("group_id")
+        if group_id is None:
+            group_id = db.get_group_id_for_player(session["player_id"])
+        company_id = session.get("company_id")
 
-    n = max(len(roster), 1)
+        roster = []
+        if roster_ids:
+            for pid in roster_ids:
+                rows = db.search_custom_tb_by_id(pid)
+                name = rows[0]["name"] if rows else ""
+                roster.append({
+                    "player_id": pid,
+                    "name": name,
+                    "is_payer": 1 if session.get("player_id") == pid else 0,
+                })
+        else:
+            roster = db.get_session_roster(sid)
+            if not roster:
+                roster = [{
+                    "player_id": session["player_id"],
+                    "name": session.get("player_name") or "",
+                    "is_payer": 1,
+                }]
+    else:
+        sid = None
+        group_id = None
+        company_id = None
+        roster = []
+
+    if roster_size_at_play is not None:
+        try:
+            n = max(int(roster_size_at_play), 1)
+        except (TypeError, ValueError):
+            n = max(len(roster), 1)
+    elif roster_ids:
+        n = max(len(roster_ids), 1)
+    else:
+        n = max(len(roster), 1)
+
     members_snap = [
         {"player_id": m["player_id"], "name": m.get("name") or ""}
         for m in roster
     ] if roster else []
 
-    team_score_id = db.upsert_central_team_score({
+    return {
+        "session_id": sid,
+        "group_id": group_id,
+        "company_id": company_id,
+        "roster": roster,
+        "members_snap": members_snap,
+        "n": n,
+        "roster_size_at_play": roster_size_at_play if roster_size_at_play is not None else n,
+    }
+
+
+def _ingest_card_score(
+    db: Database,
+    ctx: dict,
+    card_id: str,
+    player_slot: int,
+    raw_score,
+    final_score,
+    slot_ctx: dict,
+    *,
+    play_mode=None,
+    two_card_play: bool = False,
+    match_key=None,
+    opponent_group_id=None,
+    opponent_card_id=None,
+):
+    raw_f, final_f = _effective_scores(raw_score, final_score)
+    cid = card_id or ""
+
+    sid = slot_ctx["session_id"]
+    n = slot_ctx["n"]
+    members_snap = slot_ctx["members_snap"]
+    roster = slot_ctx["roster"]
+    company_id = slot_ctx["company_id"]
+    group_id = slot_ctx["group_id"]
+    roster_size_at_play = slot_ctx["roster_size_at_play"]
+
+    ingest_ctx = {
         **ctx,
+        "play_mode": play_mode,
+        "roster_size_at_play": roster_size_at_play,
+        "two_card_play": two_card_play,
+        "match_key": match_key,
+        "opponent_group_id": opponent_group_id,
+        "opponent_card_id": opponent_card_id,
+    }
+
+    team_score_id = db.upsert_central_team_score({
+        **ingest_ctx,
         "session_id": sid,
         "card_id": cid or None,
         "player_slot": player_slot,
@@ -71,19 +179,17 @@ def _ingest_card_score(db: Database, ctx: dict, card_id: str, player_slot: int,
         "final_score": final_f,
         "member_count": n,
         "members_json": json.dumps(members_snap),
-        "company_id": (session or {}).get("company_id"),
-        "group_id": (session or {}).get("group_id"),
+        "company_id": company_id,
+        "group_id": group_id,
     })
 
     share_raw = round(raw_f / n, 4)
     share_final = round(final_f / n, 4)
-    company_id = (session or {}).get("company_id")
-    group_id = (session or {}).get("group_id")
 
     if roster:
         for m in roster:
             db.upsert_central_score({
-                **ctx,
+                **ingest_ctx,
                 "player_id": m["player_id"],
                 "card_id": cid or None,
                 "player_slot": player_slot,
@@ -95,9 +201,8 @@ def _ingest_card_score(db: Database, ctx: dict, card_id: str, player_slot: int,
                 "group_id": group_id,
             })
     else:
-        # Guest / unknown card — single anonymous row
         db.upsert_central_score({
-            **ctx,
+            **ingest_ctx,
             "player_id": None,
             "card_id": cid or None,
             "player_slot": player_slot,
@@ -108,6 +213,81 @@ def _ingest_card_score(db: Database, ctx: dict, card_id: str, player_slot: int,
             "company_id": company_id,
             "group_id": group_id,
         })
+
+
+def _ingest_game_row(db: Database, game: str, row: dict):
+    played_at = row.get("ts") or row.get("played_at")
+    ctx = {
+        "game": game,
+        "level": row.get("level", ""),
+        "end_level": row.get("end_level", ""),
+        "level_file": row.get("level_file", ""),
+        "end_level_file": row.get("end_level_file", ""),
+        "life": row.get("life"),
+        "lives_start": row.get("lives_start"),
+        "result": row.get("result"),
+        "time_used": row.get("time_used", 0),
+        "levels_cleared": row.get("levels_cleared", 0),
+        "difficulty": row.get("difficulty", ""),
+        "started_at": row.get("started_at", ""),
+        "played_at": played_at,
+    }
+
+    card_id = row.get("card_id") or ""
+    card_id2 = row.get("card_id2") or ""
+    play_mode = row.get("play_mode")
+    two_card = bool(card_id2 and card_id2 != card_id)
+    if two_card and play_mode and play_mode != "team_battle":
+        logger.warning(
+            f"Two-card play for {game} with play_mode={play_mode!r} (expected team_battle)"
+        )
+    match_key = _match_key(game, played_at or "", card_id, card_id2) if two_card else None
+
+    ctx1 = _resolve_card_context(
+        db, card_id, played_at,
+        row.get("session_id"), row.get("group_id"),
+        row.get("roster_size_at_play"), row.get("roster_player_ids"),
+    )
+    ctx2 = None
+    if two_card:
+        ctx2 = _resolve_card_context(
+            db, card_id2, played_at,
+            row.get("session_id2"), row.get("group_id2"),
+            row.get("roster_size_at_play2"), row.get("roster_player_ids2"),
+        )
+
+    ingest_second = two_card
+    if two_card and ctx1.get("session_id") and ctx1["session_id"] == ctx2.get("session_id"):
+        logger.warning(
+            f"Two-card play with same session #{ctx1['session_id']} — ingesting slot 1 only"
+        )
+        ingest_second = False
+        match_key = None
+
+    two_card_play = ingest_second
+
+    _ingest_card_score(
+        db, ctx, card_id, 1,
+        row.get("score", 0), row.get("final_score", 0),
+        ctx1,
+        play_mode=play_mode,
+        two_card_play=two_card_play,
+        match_key=match_key if two_card_play else None,
+        opponent_group_id=ctx2.get("group_id") if ctx2 else None,
+        opponent_card_id=card_id2 if ingest_second else None,
+    )
+
+    if ingest_second and ctx2:
+        _ingest_card_score(
+            db, ctx, card_id2, 2,
+            row.get("score2", 0), row.get("final_score2", 0),
+            ctx2,
+            play_mode=play_mode,
+            two_card_play=True,
+            match_key=match_key,
+            opponent_group_id=ctx1.get("group_id"),
+            opponent_card_id=card_id,
+        )
 
 
 async def _poll_game(db: Database, game: str, base_url: str):
@@ -132,40 +312,8 @@ async def _poll_game(db: Database, game: str, base_url: str):
             if payload.get("success"):
                 max_ts = since
                 for row in payload.get("scores") or []:
+                    _ingest_game_row(db, game, row)
                     played_at = row.get("ts") or row.get("played_at")
-                    ctx = {
-                        "game": game,
-                        "level": row.get("level", ""),
-                        "end_level": row.get("end_level", ""),
-                        "level_file": row.get("level_file", ""),
-                        "end_level_file": row.get("end_level_file", ""),
-                        "life": row.get("life"),
-                        "lives_start": row.get("lives_start"),
-                        "result": row.get("result"),
-                        "time_used": row.get("time_used", 0),
-                        "levels_cleared": row.get("levels_cleared", 0),
-                        "difficulty": row.get("difficulty", ""),
-                        "started_at": row.get("started_at", ""),
-                        "played_at": played_at,
-                    }
-
-                    _ingest_card_score(
-                        db, ctx,
-                        row.get("card_id") or "",
-                        1,
-                        row.get("score", 0),
-                        row.get("final_score", 0),
-                    )
-
-                    if row.get("multiplayer") and (row.get("card_id2") or ""):
-                        _ingest_card_score(
-                            db, ctx,
-                            row.get("card_id2") or "",
-                            2,
-                            row.get("score2", 0),
-                            row.get("final_score2", 0),
-                        )
-
                     if played_at and played_at > max_ts:
                         max_ts = played_at
                 if payload.get("scores"):

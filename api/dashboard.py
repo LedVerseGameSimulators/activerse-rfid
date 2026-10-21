@@ -11,9 +11,15 @@ def get_health(db: Database):
 
 def get_leaderboard(db: Database, game: str = "all", period: str = "alltime",
                     limit: int = 20, board: str = "individual",
-                    company_id: Optional[int] = None, group_id: Optional[int] = None):
+                    company_id: Optional[int] = None, group_id: Optional[int] = None,
+                    play_mode: Optional[str] = None, min_size: Optional[int] = None,
+                    max_size: Optional[int] = None, two_card: Optional[bool] = None):
+    lb_kwargs = dict(
+        company_id=company_id, group_id=group_id, play_mode=play_mode,
+        min_size=min_size, max_size=max_size, two_card=two_card,
+    )
     if board == "team":
-        rows = db.get_team_leaderboard(game, period, limit, company_id=company_id, group_id=group_id)
+        rows = db.get_team_leaderboard(game, period, limit, **lb_kwargs)
         for r in rows:
             try:
                 members = json.loads(r.get("members_json") or "[]")
@@ -23,9 +29,8 @@ def get_leaderboard(db: Database, game: str = "all", period: str = "alltime",
             r["player_name"] = ", ".join(
                 m.get("name") or f"#{m.get('player_id')}" for m in members
             ) or f"Team ({r.get('member_count', '?')})"
-            r["score"] = r.get("final_score") if r.get("final_score") is not None else r.get("score")
         return rows
-    return db.get_leaderboard(game, period, limit, company_id=company_id, group_id=group_id)
+    return db.get_leaderboard(game, period, limit, **lb_kwargs)
 
 
 def get_stats(db: Database):

@@ -287,6 +287,19 @@ class Database:
                                     f"{'INTEGER' if _col in ('company_id', 'group_id') else 'TEXT'}")
                     except sqlite3.OperationalError:
                         pass
+                for _col, _typ in (
+                    ("play_mode", "TEXT"),
+                    ("roster_size_at_play", "INTEGER"),
+                    ("two_card_play", "INTEGER DEFAULT 0"),
+                    ("match_key", "TEXT"),
+                    ("opponent_group_id", "INTEGER"),
+                    ("opponent_card_id", "TEXT"),
+                ):
+                    for _table in ("central_team_scores", "central_scores"):
+                        try:
+                            con.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} {_typ}")
+                        except sqlite3.OperationalError:
+                            pass
                 # Optional columns on custom_info
                 for col, typ in (("email", "TEXT"), ("age", "INTEGER"), ("notes", "TEXT"),
                                 ("credit_balance", "REAL DEFAULT 0")):
@@ -1065,24 +1078,35 @@ class Database:
         """Session that owned this card at played_at (for late poll / roster snapshot)."""
         if not card_id:
             return None
-        if played_at:
-            # Normalize common ISO 'T' separator
-            ts = played_at.replace("T", " ")[:19]
-            row = self._row_to_dict(
-                self._execute(
-                    "SELECT ps.*, ci.name AS player_name "
-                    "FROM player_sessions ps "
-                    "JOIN custom_info ci ON ci.custom_id = ps.player_id "
-                    "WHERE ps.card_id = ? AND ps.issued_at <= ? "
-                    "AND (ps.closed_at IS NULL OR ps.closed_at >= ?) "
-                    "ORDER BY ps.issued_at DESC LIMIT 1",
-                    (card_id, ts, ts),
-                    fetch="one",
-                )
+        if not played_at:
+            return None
+        # Normalize common ISO 'T' separator
+        ts = played_at.replace("T", " ")[:19]
+        return self._row_to_dict(
+            self._execute(
+                "SELECT ps.*, ci.name AS player_name "
+                "FROM player_sessions ps "
+                "JOIN custom_info ci ON ci.custom_id = ps.player_id "
+                "WHERE ps.card_id = ? AND ps.issued_at <= ? "
+                "AND (ps.closed_at IS NULL OR ps.closed_at >= ?) "
+                "ORDER BY ps.issued_at DESC LIMIT 1",
+                (card_id, ts, ts),
+                fetch="one",
             )
-            if row:
-                return row
-        return self.get_active_session_by_card(card_id)
+        )
+
+    def get_group_id_for_player(self, player_id: int) -> Optional[int]:
+        """Fallback when player_sessions.group_id is unset.
+
+        With multi-group membership (future), this arbitrary LIMIT 1 pick may
+        be wrong — callers should prefer the session's stamped group_id.
+        """
+        row = self._execute(
+            "SELECT group_id FROM group_members WHERE player_id = ? LIMIT 1",
+            (player_id,),
+            fetch="one",
+        )
+        return int(row["group_id"]) if row else None
 
     def upsert_central_team_score(self, score: dict) -> Optional[int]:
         """Insert team total; return row id (existing or new).
@@ -1117,6 +1141,12 @@ class Database:
                     self._now_iso(),
                     score.get("company_id"),
                     score.get("group_id"),
+                    score.get("play_mode"),
+                    score.get("roster_size_at_play"),
+                    1 if score.get("two_card_play") else 0,
+                    score.get("match_key"),
+                    score.get("opponent_group_id"),
+                    score.get("opponent_card_id"),
                 )
                 cur = con.execute(
                     "INSERT OR IGNORE INTO central_team_scores "
@@ -1124,8 +1154,11 @@ class Database:
                     "level_file, end_level_file, "
                     "score, final_score, member_count, members_json, life, lives_start, "
                     "result, time_used, levels_cleared, difficulty, started_at, "
-                    "played_at, polled_at, company_id, group_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "played_at, polled_at, company_id, group_id, play_mode, "
+                    "roster_size_at_play, two_card_play, match_key, opponent_group_id, "
+                    "opponent_card_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params,
                 )
                 con.commit()
@@ -1153,8 +1186,11 @@ class Database:
             "(player_id, card_id, player_slot, session_id, team_score_id, game, level, end_level, "
             "level_file, end_level_file, "
             "score, final_score, life, lives_start, result, time_used, "
-            "levels_cleared, difficulty, started_at, played_at, polled_at, company_id, group_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "levels_cleared, difficulty, started_at, played_at, polled_at, company_id, group_id, "
+            "play_mode, roster_size_at_play, two_card_play, match_key, opponent_group_id, "
+            "opponent_card_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?)",
             (
                 score.get("player_id"),
                 score.get("card_id") or "",
@@ -1179,6 +1215,12 @@ class Database:
                 self._now_iso(),
                 score.get("company_id"),
                 score.get("group_id"),
+                score.get("play_mode"),
+                score.get("roster_size_at_play"),
+                1 if score.get("two_card_play") else 0,
+                score.get("match_key"),
+                score.get("opponent_group_id"),
+                score.get("opponent_card_id"),
             ),
         )
 
@@ -1238,8 +1280,10 @@ class Database:
         return [dict(r) for r in rows] if rows else []
 
     def get_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20,
-                        company_id: Optional[int] = None, group_id: Optional[int] = None):
-        clauses = ["1=1"]
+                        company_id: Optional[int] = None, group_id: Optional[int] = None,
+                        play_mode: Optional[str] = None, min_size: Optional[int] = None,
+                        max_size: Optional[int] = None, two_card: Optional[bool] = None):
+        clauses = ["cs.player_id IS NOT NULL"]
         params: list = []
         if game != "all":
             clauses.append("cs.game = ?")
@@ -1250,6 +1294,19 @@ class Database:
         if group_id is not None:
             clauses.append("cs.group_id = ?")
             params.append(group_id)
+        if play_mode is not None:
+            clauses.append("cs.play_mode = ?")
+            params.append(play_mode)
+        if min_size is not None:
+            clauses.append("COALESCE(cs.roster_size_at_play, 1) >= ?")
+            params.append(min_size)
+        if max_size is not None:
+            clauses.append("COALESCE(cs.roster_size_at_play, 1) <= ?")
+            params.append(max_size)
+        if two_card is True:
+            clauses.append("cs.two_card_play = 1")
+        elif two_card is False:
+            clauses.append("(cs.two_card_play IS NULL OR cs.two_card_play = 0)")
         now = datetime.now()
         if period == "today":
             clauses.append("cs.played_at >= ?")
@@ -1266,15 +1323,20 @@ class Database:
         rows = self._execute(
             f"SELECT cs.*, ci.name AS player_name FROM central_scores cs "
             f"LEFT JOIN custom_info ci ON ci.custom_id = cs.player_id "
-            f"WHERE {where} ORDER BY COALESCE(cs.final_score, cs.score) DESC LIMIT ?",
+            f"WHERE {where} ORDER BY cs.score DESC LIMIT ?",
             tuple(params),
             fetch="all",
         )
         return [dict(r) for r in rows] if rows else []
 
     def get_team_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20,
-                             company_id: Optional[int] = None, group_id: Optional[int] = None):
-        clauses = ["cts.member_count >= 2"]
+                             company_id: Optional[int] = None, group_id: Optional[int] = None,
+                             play_mode: Optional[str] = None, min_size: Optional[int] = None,
+                             max_size: Optional[int] = None, two_card: Optional[bool] = None):
+        clauses = [
+            "cts.session_id IS NOT NULL",
+            "cts.group_id IS NOT NULL",
+        ]
         params: list = []
         if game != "all":
             clauses.append("cts.game = ?")
@@ -1285,6 +1347,19 @@ class Database:
         if group_id is not None:
             clauses.append("cts.group_id = ?")
             params.append(group_id)
+        if play_mode is not None:
+            clauses.append("cts.play_mode = ?")
+            params.append(play_mode)
+        if min_size is not None:
+            clauses.append("COALESCE(cts.roster_size_at_play, cts.member_count, 1) >= ?")
+            params.append(min_size)
+        if max_size is not None:
+            clauses.append("COALESCE(cts.roster_size_at_play, cts.member_count, 1) <= ?")
+            params.append(max_size)
+        if two_card is True:
+            clauses.append("cts.two_card_play = 1")
+        elif two_card is False:
+            clauses.append("(cts.two_card_play IS NULL OR cts.two_card_play = 0)")
         now = datetime.now()
         if period == "today":
             clauses.append("cts.played_at >= ?")
@@ -1300,7 +1375,7 @@ class Database:
         params.append(limit)
         rows = self._execute(
             f"SELECT cts.* FROM central_team_scores cts "
-            f"WHERE {where} ORDER BY COALESCE(cts.final_score, cts.score) DESC LIMIT ?",
+            f"WHERE {where} ORDER BY cts.score DESC LIMIT ?",
             tuple(params),
             fetch="all",
         )
@@ -1740,8 +1815,8 @@ class Database:
             fetch="one",
         )
         unique_today = self._execute(
-            "SELECT COUNT(DISTINCT COALESCE(player_id, card_id)) AS c FROM central_scores "
-            "WHERE played_at LIKE ?",
+            "SELECT COUNT(DISTINCT player_id) AS c FROM central_scores "
+            "WHERE played_at LIKE ? AND player_id IS NOT NULL",
             (f"{today}%",),
             fetch="one",
         )

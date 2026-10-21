@@ -169,10 +169,18 @@ def validate_card(db: Database, card_id: str):
         }]
         db.add_roster_member(session["id"], session["player_id"])
 
+    # Prefer visit-stamped group; membership lookup is fallback only (see database.get_group_id_for_player).
+    group_id = session.get("group_id")
+    if group_id is None:
+        group_id = db.get_group_id_for_player(session["player_id"])
+
     return {
         "valid": True,
         "player_name": session.get("player_name"),
         "session_id": session["id"],
         "minutes_remaining": remaining,
         "members": [{"player_id": m["player_id"], "name": m["name"]} for m in roster],
+        "group_id": group_id,
+        "roster_size": len(roster),
+        "roster_player_ids": [m["player_id"] for m in roster],
     }

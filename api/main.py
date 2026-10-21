@@ -356,8 +356,15 @@ async def dash_leaderboard(
     board: str = Query(default="individual"),
     company_id: int | None = Query(default=None),
     group_id: int | None = Query(default=None),
+    play_mode: str | None = Query(default=None),
+    min_size: int | None = Query(default=None),
+    max_size: int | None = Query(default=None),
+    two_card: bool | None = Query(default=None),
 ):
-    return dashboard.get_leaderboard(get_db(), game, period, limit, board, company_id, group_id)
+    return dashboard.get_leaderboard(
+        get_db(), game, period, limit, board, company_id, group_id,
+        play_mode=play_mode, min_size=min_size, max_size=max_size, two_card=two_card,
+    )
 
 
 @app.get("/dashboard/stats")

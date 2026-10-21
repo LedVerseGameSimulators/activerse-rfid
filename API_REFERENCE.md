@@ -133,8 +133,10 @@ player's credit balance up front (no refund on early close or unused expiry).
 - **`GET /validate?card_id=`** — **called by game machines, no auth.** Checks whether a
   scanned card has an active, non-expired session with enough time to start.
   Response: `{valid: bool, player_name?, session_id?, minutes_remaining?, reason?,
-  members?}`. On `valid: true`, `members` is `[{player_id, name}, ...]` (roster at
-  validate time; legacy sessions without a roster row are auto-seeded with the payer).
+  members?, group_id?, roster_size?, roster_player_ids?}`. On `valid: true`, `members` is
+  `[{player_id, name}, ...]` (roster at validate time; legacy sessions without a roster
+  row are auto-seeded with the payer). `group_id` prefers the open session's stamped
+  group; `roster_size` / `roster_player_ids` describe the visit roster snapshot.
   `reason` values on `valid: false`: `no_card`, `card_not_found`, `no_active_session`,
   `expired`, `insufficient_time`.
 
@@ -148,11 +150,14 @@ player's credit balance up front (no refund on early close or unused expiry).
 
 - **`GET /dashboard/leaderboard?game=all&period=alltime&limit=20&board=individual`** —
   cross-game score leaderboard. `game` filters to one game key or `all`; `period` is
-  `alltime`, `today`, `week`, or `month`; `limit` caps rows (max 100).
-  `board=individual` (default) returns per-player share rows from `central_scores`
-  (joined with player name), ordered by `final_score`/`score` descending.
-  `board=team` returns multi-member runs from `central_team_scores` (`member_count >= 2`)
-  with parsed `members` and a joined `player_name` label.
+  `alltime`, `today`, `week`, or `month`; `limit` caps rows (max 100). Optional filters:
+  `play_mode` (`quick_play` | `team_battle` | `tournament`), `min_size`, `max_size`
+  (roster size at play), `two_card` (bool, two distinct cards in the match).
+  `board=individual` (default) returns attributed per-player share rows from
+  `central_scores` (`player_id IS NOT NULL`), ordered by raw `score` descending.
+  `board=team` returns attributed team totals from `central_team_scores` (requires
+  `session_id` and `group_id`), any roster size, with parsed `members` and a joined
+  `player_name` label. Unattributed / guest rows are excluded from both boards.
 
 - **`GET /dashboard/stats`** — quick aggregate counters for the admin dashboard.
   Response: `{games_today, games_month, unique_players_today}`.
@@ -225,8 +230,8 @@ a company member).
   only (no group), matching "guest list first, teams later". Idempotent — re-uploading
   the same file creates zero duplicate rows. A row for a player already affiliated with
   a different company surfaces as a per-row error, never creates a new company.
-- `GET /dashboard/leaderboard?...&company_id=&group_id=` — filters Individual/Team
-  boards by company and/or group (e.g. "Team Alpha vs Team Beta" within one company, or
+- `GET /dashboard/leaderboard?...&company_id=&group_id=&play_mode=&min_size=&max_size=&two_card=` —
+  filters Individual/Team boards by company and/or group (e.g. "Team Alpha vs Team Beta" within one company, or
   a walk-in group's own board via `group_id` alone with no `company_id`). A solo session
   by a company member not currently on any group also stamps `company_id` (no
   `group_id`), so they still show up on the company's board.
