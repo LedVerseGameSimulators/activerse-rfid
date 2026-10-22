@@ -11,7 +11,7 @@ from loguru import logger
 
 from .config import API_HOST, API_PORT, GAME_REGISTRY
 from .database import get_db
-from . import players, sessions, dashboard, companies, groups, tournaments as tournaments_mod
+from . import players, sessions, dashboard, companies, groups, tournaments as tournaments_mod, stats as stats_mod
 from . import poller as poller_mod
 from . import import_excel as import_excel_mod
 from .models import (
@@ -468,6 +468,103 @@ async def tournament_leaderboard_route(
         company_id=company_id, group_id=group_id, play_mode=play_mode,
         min_size=min_size, max_size=max_size, two_card=two_card,
         include_archived=include_archived, difficulty=difficulty,
+    )
+
+
+# ── Stats (P5a) ───────────────────────────────────────────────────────────
+
+@app.get("/stats/player/{player_id}")
+async def stats_player(
+    player_id: int,
+    period: str = Query(default="alltime"),
+    game: str = Query(default="all"),
+    play_mode: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    include_archived: bool = Query(default=False),
+    min_size: int | None = Query(default=None, ge=0),
+    max_size: int | None = Query(default=None, ge=0),
+):
+    return stats_mod.get_player_stats(
+        get_db(), player_id,
+        period=period, game=game, play_mode=play_mode,
+        date_from=date_from, date_to=date_to,
+        include_archived=include_archived, min_size=min_size, max_size=max_size,
+    )
+
+
+@app.get("/stats/session/{session_id}")
+async def stats_session(session_id: int):
+    return stats_mod.get_session_stats(get_db(), session_id)
+
+
+@app.get("/stats/group/{group_id}")
+async def stats_group(
+    group_id: int,
+    period: str = Query(default="alltime"),
+    game: str = Query(default="all"),
+    play_mode: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    include_archived: bool = Query(default=True),
+    min_size: int | None = Query(default=None, ge=0),
+    max_size: int | None = Query(default=None, ge=0),
+):
+    return stats_mod.get_group_stats(
+        get_db(), group_id,
+        period=period, game=game, play_mode=play_mode,
+        date_from=date_from, date_to=date_to,
+        include_archived=include_archived, min_size=min_size, max_size=max_size,
+    )
+
+
+@app.get("/stats/company/{company_id}")
+async def stats_company(
+    company_id: int,
+    period: str = Query(default="alltime"),
+    game: str = Query(default="all"),
+    play_mode: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    include_archived: bool = Query(default=False),
+    min_size: int | None = Query(default=None, ge=0),
+    max_size: int | None = Query(default=None, ge=0),
+):
+    return stats_mod.get_company_stats(
+        get_db(), company_id,
+        period=period, game=game, play_mode=play_mode,
+        date_from=date_from, date_to=date_to,
+        include_archived=include_archived, min_size=min_size, max_size=max_size,
+    )
+
+
+@app.get("/stats/game/{game_key}")
+async def stats_game(
+    game_key: str,
+    period: str = Query(default="alltime"),
+    play_mode: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    include_archived: bool = Query(default=False),
+    min_size: int | None = Query(default=None, ge=0),
+    max_size: int | None = Query(default=None, ge=0),
+):
+    return stats_mod.get_game_stats(
+        get_db(), game_key,
+        period=period, play_mode=play_mode,
+        date_from=date_from, date_to=date_to,
+        include_archived=include_archived, min_size=min_size, max_size=max_size,
+    )
+
+
+@app.get("/stats/tournament/{tournament_id}")
+async def stats_tournament(
+    tournament_id: int,
+    period: str = Query(default="alltime"),
+    game: str = Query(default="all"),
+):
+    return stats_mod.get_tournament_stats(
+        get_db(), tournament_id, period=period, game=game,
     )
 
 
