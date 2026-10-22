@@ -55,6 +55,17 @@ def test_validation_name_and_dates(client):
     }).status_code == 422
 
 
+def test_strict_tournament_dates(client):
+    base = {"name": "X", "type": "solo", "scope": "global"}
+    for bad in ("20260101", "2026-W01-1", "2026-1-1", "2026-02-30"):
+        assert client.post("/tournaments", json={**base, "starts_at": bad}).status_code == 422
+    ok = client.post("/tournaments", json={
+        **base, "starts_at": "2026-10-01", "ends_at": "2026-10-31",
+    })
+    assert ok.status_code == 200
+    assert ok.json()["starts_at"] == "2026-10-01"
+
+
 def test_company_scope_requires_company(client, db):
     r = client.post("/tournaments", json={
         "name": "Co cup", "type": "team", "scope": "company",
@@ -157,3 +168,73 @@ def test_wrong_board_tournament_id(client, db):
     tid = cr.json()["id"]
     r = client.get(f"/dashboard/leaderboard?board=individual&tournament_id={tid}")
     assert r.status_code == 400
+
+
+def test_active_global_archive_and_draft_blocked(client, db):
+    cr = client.post("/tournaments", json={
+        "name": "Custom global", "type": "solo", "scope": "global",
+        "starts_at": "2026-01-01", "ends_at": "2026-12-31",
+    })
+    tid = cr.json()["id"]
+    client.post(f"/tournaments/{tid}/activate-global", json={"which": "solo"})
+    assert client.put(f"/tournaments/{tid}", json={"status": "archived"}).status_code == 409
+    assert client.put(f"/tournaments/{tid}", json={"status": "draft"}).status_code == 409
+    legacy_id = next(
+        t["id"]
+        for t in client.get("/tournaments?type=solo").json()
+        if t.get("system_key") == "legacy_solo"
+    )
+    client.post(f"/tournaments/{legacy_id}/activate-global", json={"which": "solo"})
+    assert client.put(f"/tournaments/{tid}", json={"status": "archived"}).status_code == 200
+
+
+def test_draft_active_global_falls_back_to_legacy(client, db):
+    cr = client.post("/tournaments", json={
+        "name": "Draft me", "type": "solo", "scope": "global", "status": "draft",
+    })
+    tid = cr.json()["id"]
+    db.set_setting("active_global_solo_tournament_id", str(tid))
+    active = client.get("/tournaments/active").json()["solo"]
+    assert active["system_key"] == "legacy_solo"
+
+
+def test_entrant_count_window_and_company_scope(client, db):
+    p1 = _make_player(db, "555-ec1", "E1")
+    p2 = _make_player(db, "555-ec2", "E2")
+    p3 = _make_player(db, "555-ec3", "E3")
+    for card, played_at in (("ECIN1", "2026-10-05"), ("ECIN2", "2026-10-10"), ("ECOUT", "2026-11-05")):
+        db.upsert_central_score({
+            "player_id": p1 if card != "ECIN2" else p2,
+            "card_id": card, "game": "hoops", "played_at": played_at, "score": 1,
+        })
+    cr = client.post("/tournaments", json={
+        "name": "Oct entrants", "type": "solo", "scope": "global",
+        "starts_at": "2026-10-01", "ends_at": "2026-10-31",
+    })
+    tid = cr.json()["id"]
+    detail = client.get(f"/tournaments/{tid}").json()
+    assert detail["play_count"] == 2
+    assert detail["entrant_count"] == 2
+
+    cid = db.create_company("Entrant Co")["id"]
+    db.upsert_central_score({
+        "player_id": p3, "card_id": "ECCO", "game": "hoops",
+        "played_at": "2026-10-15", "score": 1, "company_id": cid,
+    })
+    db.upsert_central_score({
+        "player_id": p1, "card_id": "ECOTHER", "game": "hoops",
+        "played_at": "2026-10-15", "score": 1, "company_id": cid + 99,
+    })
+    tco = client.post("/tournaments", json={
+        "name": "Co cup", "type": "solo", "scope": "company", "company_id": cid,
+        "starts_at": "2026-10-01", "ends_at": "2026-10-31",
+    }).json()["id"]
+    co_detail = client.get(f"/tournaments/{tco}").json()
+    assert co_detail["play_count"] == 1
+    assert co_detail["entrant_count"] == 1
+
+
+def test_dashboard_invalid_board_and_param_clamp(client, db):
+    assert client.get("/dashboard/leaderboard?board=invalid").status_code == 422
+    assert client.get("/dashboard/leaderboard?limit=0").status_code == 200
+    assert client.get("/dashboard/leaderboard?min_size=-1&max_size=-2").status_code == 200

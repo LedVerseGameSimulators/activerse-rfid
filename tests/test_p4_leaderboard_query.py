@@ -3,7 +3,11 @@ from datetime import date
 
 import pytest
 
-from api.leaderboard import period_bounds, tournament_leaderboard, resolve_tournament
+from api.leaderboard import (
+    period_bounds,
+    tournament_leaderboard,
+    resolve_tournament,
+)
 from api import dashboard
 from tests.test_step0_poller_and_leaderboard import _make_player
 
@@ -230,3 +234,8 @@ def test_min_size_clamp_and_team_member_count_fallback(db):
     })
     assert len(db.get_leaderboard(min_size=2)) == 1
     assert len(db.get_leaderboard(min_size=1)) == 2
+
+
+def test_resolve_tournament_invalid_board(db):
+    with pytest.raises(ValueError, match="board must be"):
+        resolve_tournament(db, None, "bogus", use_active=False)

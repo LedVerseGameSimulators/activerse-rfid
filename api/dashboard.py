@@ -32,6 +32,15 @@ def get_leaderboard(db: Database, game: str = "all", period: str = "alltime",
                     tournament_id: Optional[int] = None,
                     offset: int = 0,
                     difficulty: Optional[str] = None):
+    if board not in ("individual", "team"):
+        from fastapi import HTTPException
+        raise HTTPException(422, "board must be individual or team")
+    if limit <= 0:
+        limit = 20
+    if min_size is not None and min_size < 0:
+        min_size = None
+    if max_size is not None and max_size < 0:
+        max_size = None
     lb_kwargs = dict(
         game=game,
         period=period,

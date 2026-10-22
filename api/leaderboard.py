@@ -70,7 +70,9 @@ def resolve_tournament(
     use_active: bool,
 ) -> Optional[dict]:
     """Resolve tournament row for leaderboard window / company scope."""
-    ttype = _BOARD_TO_TYPE.get(board, "solo")
+    if board not in _BOARD_TO_TYPE:
+        raise ValueError("board must be individual or team")
+    ttype = _BOARD_TO_TYPE[board]
 
     if tournament_id is not None:
         row = _load_tournament(db, tournament_id)
@@ -95,7 +97,7 @@ def resolve_tournament(
             row = _load_tournament(db, tid)
         except (TypeError, ValueError):
             row = None
-    if row and row.get("scope") == "global" and row.get("status") != "archived":
+    if row and row.get("scope") == "global" and row.get("status") == "active":
         return row
 
     legacy_key = _LEGACY_SYSTEM_KEY[board]
@@ -311,6 +313,44 @@ def tournament_leaderboard(
         for i, row in enumerate(out):
             row["rank"] = offset + i + 1
     return out
+
+
+def tournament_entrant_count(db: Database, tournament_id: int) -> int:
+    """Distinct entrants in the tournament window (solo: player_id, team: group_id)."""
+    row = _load_tournament(db, tournament_id)
+    if not row:
+        return 0
+    board = _TYPE_TO_BOARD[row["type"]]
+    tournament = row
+    t_lo, t_hi = _tournament_window_bounds(tournament)
+    lo, hi, vacuous = _merge_bounds(None, None, t_lo, t_hi)
+    if vacuous:
+        return 0
+    from_where, params = _build(
+        board,
+        game="all",
+        lo=lo,
+        hi=hi,
+        tournament=tournament,
+        company_id=None,
+        group_id=None,
+        play_mode=None,
+        min_size=None,
+        max_size=None,
+        two_card=None,
+        include_archived=False,
+        difficulty=None,
+    )
+    if board == "team":
+        expr = "COUNT(DISTINCT cts.group_id)"
+    else:
+        expr = "COUNT(DISTINCT cs.player_id)"
+    cnt = db._execute(
+        f"SELECT {expr} AS c {from_where}",
+        tuple(params),
+        fetch="one",
+    )
+    return int(cnt["c"]) if cnt else 0
 
 
 def tournament_leaderboard_count(

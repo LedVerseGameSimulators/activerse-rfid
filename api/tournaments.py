@@ -1,6 +1,7 @@
 """Tournament CRUD and leaderboard envelope (P4a)."""
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any, Optional
 
@@ -10,6 +11,7 @@ from .database import Database
 from .leaderboard import (
     effective_window,
     resolve_tournament,
+    tournament_entrant_count,
     tournament_leaderboard,
     tournament_leaderboard_count,
     _TYPE_TO_BOARD,
@@ -17,6 +19,7 @@ from .leaderboard import (
 from . import dashboard
 
 VALID_PLAY_MODES = frozenset({"quick_play", "team_battle", "tournament"})
+_STRICT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _now_iso(db: Database) -> str:
@@ -29,11 +32,13 @@ def _parse_date_field(value: Optional[str], field: str) -> Optional[str]:
         return None
     if not isinstance(value, str):
         raise HTTPException(422, f"{field} must be YYYY-MM-DD")
+    if not _STRICT_DATE_RE.match(value):
+        raise HTTPException(422, f"{field} must be YYYY-MM-DD")
     try:
-        date.fromisoformat(value)
+        parsed = date.fromisoformat(value)
     except ValueError:
         raise HTTPException(422, f"{field} must be YYYY-MM-DD")
-    return value
+    return parsed.isoformat()
 
 
 def _window_label(row: dict) -> str:
@@ -77,19 +82,7 @@ def _serialize_tournament(db: Database, row: dict, *, counts: bool = False) -> d
         out["play_count"] = tournament_leaderboard_count(
             db, board=board, tournament_id=row["id"], use_active=False
         )
-        if row["type"] == "solo":
-            ent = db._execute(
-                "SELECT COUNT(DISTINCT cs.player_id) AS c FROM central_scores cs "
-                "WHERE cs.player_id IS NOT NULL",
-                fetch="one",
-            )
-        else:
-            ent = db._execute(
-                "SELECT COUNT(DISTINCT cts.group_id) AS c FROM central_team_scores cts "
-                "WHERE cts.session_id IS NOT NULL AND cts.group_id IS NOT NULL",
-                fetch="one",
-            )
-        out["entrant_count"] = int(ent["c"]) if ent else 0
+        out["entrant_count"] = tournament_entrant_count(db, row["id"])
     return out
 
 
@@ -188,17 +181,15 @@ def update_tournament(db: Database, tournament_id: int, body: dict):
     for imm in ("type", "scope", "company_id"):
         if imm in body and body[imm] != row[imm]:
             raise HTTPException(422, f"{imm} is immutable after create")
+    solo_active, team_active = _active_global_ids(db)
+    if row["id"] in (solo_active, team_active):
+        new_status = body.get("status", row["status"])
+        if new_status in ("draft", "archived"):
+            raise HTTPException(409, "activate another first")
     if row.get("system_key"):
         for imm in ("starts_at", "ends_at", "type", "scope", "company_id"):
             if imm in body and body.get(imm) != row.get(imm):
                 raise HTTPException(409, "System tournament window and type are immutable")
-        solo_active, team_active = _active_global_ids(db)
-        if row["id"] in (solo_active, team_active):
-            new_status = body.get("status", row["status"])
-            if new_status in ("draft", "archived"):
-                raise HTTPException(
-                    409, "Cannot archive or draft the active global tournament"
-                )
     name = body.get("name")
     if name is not None:
         name = name.strip()

@@ -156,6 +156,13 @@ the leader's credit balance up front; early close refunds unused clock minutes t
   `session_id` and `group_id`), any roster size, with parsed `members` and a joined
   `player_name` label. Unattributed / guest rows are excluded from both boards.
 
+  **P4a behaviour notes:** On the solo (`individual`) board, `min_size` / `max_size`
+  use roster size `MAX(COALESCE(roster_size_at_play, linked team row member_count, 1), 1)`
+  — so legacy rows with NULL `roster_size_at_play` but a linked `central_team_scores`
+  row still match size filters (e.g. `min_size=2` includes multi-member plays). The
+  `week` period is calendar-based: plays from midnight local time seven days ago
+  through now (not a rolling 168-hour timestamp window).
+
 - **`GET /dashboard/stats`** — quick aggregate counters for the admin dashboard.
   Response: `{games_today, games_month, unique_players_today}`.
 
