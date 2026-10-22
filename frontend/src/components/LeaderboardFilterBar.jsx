@@ -68,10 +68,11 @@ export default function LeaderboardFilterBar({ variant = 'admin', filters, onCha
       setGroups([])
       return
     }
-    api(`/groups?company_id=${filters.companyId}`)
+    const archQ = filters.includeArchived ? '&include_archived=true' : ''
+    api(`/groups?company_id=${filters.companyId}${archQ}`)
       .then(setGroups)
       .catch(() => setGroups([]))
-  }, [filters.companyId])
+  }, [filters.companyId, filters.includeArchived])
 
   const patch = partial => onChange({ ...filters, ...partial, offset: partial.offset ?? 0 })
 

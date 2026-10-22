@@ -45,11 +45,18 @@ export default function PublicLeaderboard() {
         setHasMore(Array.isArray(data) && data.length >= 20)
         setLoadError('')
       } catch (e) {
-        if (!cancelled) setLoadError(e.message)
+        if (!cancelled) {
+          setRows([])
+          setHasMore(false)
+          setLoadError(e.message)
+        }
       }
     }
     run(filters)
-    const t = setInterval(() => run({ ...filters, offset: 0 }), 30000)
+    const t = setInterval(() => {
+      if (filters.offset > 0) return
+      run({ ...filters, offset: 0 })
+    }, 30000)
     return () => { cancelled = true; clearInterval(t) }
   }, [filters])
 

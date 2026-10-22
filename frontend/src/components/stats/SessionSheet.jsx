@@ -54,7 +54,15 @@ export default function SessionSheet({ data }) {
             },
             { key: 'is_payer', label: 'Payer', render: r => (r.is_payer ? 'Yes' : '') },
             { key: 'joined_at', label: 'Joined' },
-            { key: 'joined_via', label: 'Via' },
+            {
+              key: 'joined_via',
+              label: 'Via',
+              render: r => {
+                const v = r.joined_via
+                if (!v || v === 'unknown') return 'Unknown'
+                return String(v).replace(/_/g, ' ')
+              },
+            },
             { key: 'earned_min', label: 'Earned', render: r => formatMinutes(r.earned_min) },
           ]}
         />

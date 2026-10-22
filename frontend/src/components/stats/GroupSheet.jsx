@@ -17,12 +17,21 @@ export default function GroupSheet({ data }) {
   const visits = data.visits || {}
   const pt = data.play_time || {}
 
+  const h2hLabel = (() => {
+    const wld = `${h2h.wins ?? 0}-${h2h.losses ?? 0}-${h2h.draws ?? 0}`
+    const unresolved = h2h.unresolved_matches ?? tp.unresolved_matches
+    if (unresolved != null && unresolved !== '') {
+      return `${wld} (${unresolved} unresolved)`
+    }
+    return wld
+  })()
+
   const tiles = [
     { label: 'Team plays', value: formatCount(tp.count) },
     { label: 'Best team', value: formatScore(tp.best) },
     { label: 'Avg team', value: formatAvg(tp.avg) },
     { label: 'Matches', value: formatCount(tp.matches) },
-    { label: 'H2H W-L-D', value: `${h2h.wins ?? 0}-${h2h.losses ?? 0}-${h2h.draws ?? 0}` },
+    { label: 'Head-to-head W-L-D', value: h2hLabel },
     { label: 'Visits', value: formatCount(visits.count) },
     { label: 'Play time', value: formatMinutes(pt.earned_min) },
   ]
@@ -119,6 +128,7 @@ export default function GroupSheet({ data }) {
         <p style={{ ...muted, marginBottom: 8 }}>
           Solo-issue visit_start rows without group_id are excluded from group rollups.
         </p>
+        {pt.note && <p style={{ ...muted, fontStyle: 'italic', marginBottom: 8 }}>{pt.note}</p>}
         <MiniTable
           rows={pt.by_player || []}
           empty="No group play time."
@@ -138,7 +148,11 @@ export default function GroupSheet({ data }) {
             { key: 'name', label: 'Tournament', render: r => <TournamentLink id={r.id} name={r.name} /> },
             { key: 'plays', label: 'Plays' },
             { key: 'best', label: 'Best', render: r => formatScore(r.best) },
-            { key: 'best_rank', label: 'Best rank' },
+            {
+              key: 'best_rank',
+              label: 'Best rank in tournament',
+              render: r => (r.best_rank != null ? r.best_rank : ''),
+            },
           ]}
         />
       </div>

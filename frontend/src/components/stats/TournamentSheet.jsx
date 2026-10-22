@@ -30,10 +30,12 @@ export default function TournamentSheet({ data }) {
         <h2 style={sectionTitle}>Tournament</h2>
         <p style={muted}>
           {t.type} · {t.scope}
-          {t.scope === 'company' && t.company_id && (
-            <> · <CompanyLink id={t.company_id} name={t.company_name} /></>
-          )}
         </p>
+        {t.scope === 'company' && t.company_id != null && (
+          <p style={muted}>
+            Company: <CompanyLink id={t.company_id} name={t.company_name} />
+          </p>
+        )}
         <p style={muted}>{formatTournamentWindow(t)} · Status {t.status}</p>
         {data.window && (
           <p style={{ fontSize: 12, color: '#6c757d' }}>

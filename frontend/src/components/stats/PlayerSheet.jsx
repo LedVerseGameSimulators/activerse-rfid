@@ -53,6 +53,7 @@ export default function PlayerSheet({ data }) {
         <p style={muted}>
           Earned {formatMinutes(pt.earned_min)} · Adjust net {formatMinutes(pt.adjust_net_min)} · Refund {formatMinutes(pt.refund_min)}
         </p>
+        {pt.note && <p style={{ ...muted, fontStyle: 'italic' }}>{pt.note}</p>}
         <MiniTable
           empty="No ledger events."
           rows={pt.events || []}
@@ -119,7 +120,11 @@ export default function PlayerSheet({ data }) {
             { key: 'name', label: 'Tournament', render: r => <TournamentLink id={r.id} name={r.name} /> },
             { key: 'plays', label: 'Plays' },
             { key: 'best', label: 'Best', render: r => formatScore(r.best) },
-            { key: 'best_rank', label: 'Best rank' },
+            {
+              key: 'best_rank',
+              label: 'Best rank in tournament',
+              render: r => (r.best_rank != null ? r.best_rank : ''),
+            },
           ]}
         />
       </div>

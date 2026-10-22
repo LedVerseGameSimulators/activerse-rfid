@@ -87,18 +87,19 @@ export function buildLeaderboardQuery(state, { limit = 20 } = {}) {
 
 /** Apply team-tab default min_size=2 when user has not set size manually. */
 export function applyBoardTeamSizeDefault(prev, nextBoard) {
+  const boardSwitch = { tournamentId: '', groupId: '', offset: 0 }
   if (nextBoard === 'team' && !prev.sizeTouched) {
-    return { ...prev, board: nextBoard, minSize: 2, offset: 0 }
+    return { ...prev, ...boardSwitch, board: nextBoard, minSize: 2 }
   }
   if (nextBoard === 'individual') {
-    const next = { ...prev, board: nextBoard, offset: 0 }
+    const next = { ...prev, ...boardSwitch, board: nextBoard }
     if (!prev.sizeTouched) {
       next.minSize = ''
       next.maxSize = ''
     }
     return next
   }
-  return { ...prev, board: nextBoard, offset: 0 }
+  return { ...prev, ...boardSwitch, board: nextBoard }
 }
 
 export function formatTournamentWindow(t) {

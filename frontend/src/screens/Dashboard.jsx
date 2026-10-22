@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import GameHealthTile from '../components/GameHealthTile'
 import LeaderboardTable from '../components/LeaderboardTable'
@@ -18,6 +18,8 @@ export default function Dashboard() {
   const [filters, setFilters] = useState(() => defaultLeaderboardFilters('admin'))
   const [activeGlobals, setActiveGlobals] = useState({ solo: null, team: null })
   const [tournaments, setTournaments] = useState([])
+  const [lbError, setLbError] = useState('')
+  const requestIdRef = useRef(0)
 
   const tType = boardToTournamentType(filters.board)
 
@@ -29,27 +31,35 @@ export default function Dashboard() {
     return tType === 'team' ? activeGlobals.team : activeGlobals.solo
   }, [filters.tournamentId, filters.board, tournaments, activeGlobals, tType])()
 
-  const load = async () => {
+  const load = useCallback(async (f) => {
+    const reqId = ++requestIdRef.current
     try {
-      const q = buildLeaderboardQuery(filters, { limit: 20 })
+      const type = boardToTournamentType(f.board)
+      const q = buildLeaderboardQuery(f, { limit: 20 })
       const [h, lb, st, active, tlist] = await Promise.all([
         api('/dashboard/health'),
         api(`/dashboard/leaderboard?${q}`),
         api('/dashboard/stats'),
         api('/tournaments/active'),
-        api(`/tournaments?status=active&type=${tType}`),
+        api(`/tournaments?status=active&type=${type}`),
       ])
+      if (reqId !== requestIdRef.current) return
       setHealth(h)
       setLeaderboard(lb)
       setStats(st)
       setActiveGlobals(active)
       setTournaments(tlist)
+      setLbError('')
     } catch (e) {
-      console.error(e)
+      if (reqId !== requestIdRef.current) return
+      setLeaderboard([])
+      setLbError(e.message)
     }
-  }
+  }, [])
 
-  useEffect(() => { load() }, [filters])
+  useEffect(() => {
+    load(filters)
+  }, [filters, load])
 
   const onFiltersChange = next => setFilters(next)
 
@@ -93,12 +103,13 @@ export default function Dashboard() {
           style={{ marginBottom: '1rem' }}
         />
         <div style={{ marginBottom: '0.75rem' }}>
-          <button style={btn} type="button" onClick={load}>Refresh</button>
+          <button style={btn} type="button" onClick={() => load(filters)}>Refresh</button>
         </div>
+        {lbError && <p style={{ color: '#ff6b6b', marginBottom: '0.75rem' }}>{lbError}</p>}
         <LeaderboardTable
           rows={leaderboard}
           board={filters.board}
-          emptyMessage="No plays match this tournament window and filters."
+          emptyMessage={lbError ? 'Leaderboard could not be loaded.' : 'No plays match this tournament window and filters.'}
         />
       </section>
     </div>
