@@ -229,8 +229,9 @@ export default function GroupDetail() {
       <div style={card}>
         <h2 style={{ fontSize: '1rem', marginBottom: 8 }}>Start visit</h2>
         <p style={{ color: '#9aa0a6', fontSize: 13 }}>
-          Issues a session on the leader’s card and loads all members onto the session roster (score split).
-          Leader must have credits; optional card_id binds/rebinds the leader first.
+          Deducts time from the leader&apos;s credit and loads all members onto the visit roster (score split).
+          Only the leader&apos;s RFID card works at game kiosks — members do not scan in separately.
+          Optional card_id binds/rebinds the leader first.
         </p>
         <form onSubmit={startVisit} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <input style={{ ...input, width: 100 }} type="number" min={1} value={duration} onChange={e => setDuration(e.target.value)} />

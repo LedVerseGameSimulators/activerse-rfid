@@ -92,16 +92,13 @@ LAN app, not internet-facing.
 
 ## Sessions
 
-Session model is clock-based: issuing a session deducts the full duration from the
-player's credit balance up front (no refund on early close or unused expiry).
+Session model is clock-based: **Start Visit** on a group deducts the visit duration from
+the leader's credit balance up front; early close refunds unused clock minutes to the payer (P1).
 
-- **`POST /sessions`** — issue a new session for a player. Requires a bound RFID card;
-  seeds the payer onto `session_roster`. Deduct + create + roster seed are atomic.
-  Body: `{player_id, duration_min=60, notes?}`.
-  Response: `{session_id, player_id, card_id, issued_at, expiry_at, duration_min,
-  minutes_remaining, credit_balance_after, roster}`. Error: `400` if no card bound,
-  insufficient credit, or player already on an open session/roster; `404` if player
-  not found.
+- **`POST /sessions`** — **retired (410 Gone).** Body is ignored. Response:
+  `{"detail":"Start a visit from the player's group instead."}` — use
+  **`POST /groups/{group_id}/start-visit`** (solo group for individuals; team group for
+  groups). Games only call `GET /validate`; this route is reception/admin only.
 
 - **`GET /sessions/active`** — list all currently-open sessions.
   Response: array of session rows, each with `minutes_remaining`, `roster`, and
@@ -180,12 +177,11 @@ player's credit balance up front (no refund on early close or unused expiry).
 Core model: `company_members` is the **durable** roster (one company per player,
 `UNIQUE(player_id)`) — it survives groups being deleted and remade. `groups` are
 **temporary teams** inside one company, or **walk-in groups with no company at all**
-(`company_id` is nullable — e.g. a one-off birthday-party team). A player can be on at
-most one group at a time (`group_members` is `UNIQUE(player_id)`). Adding a player to a
-corporate group auto-joins them to that company; adding them to a walk-in group skips
-company checks entirely. While on a group, solo session issuance is blocked — Start
-Visit on the group is the only play path; leaving the group re-enables solo play (still
-a company member).
+(`company_id` is nullable — e.g. a one-off birthday-party team). A player may belong to
+many groups (`UNIQUE(group_id, player_id)`); each registered player also has a **solo
+group** (`kind=solo`). Adding a player to a corporate group auto-joins them to that
+company. **Start Visit** on a group is the only way to open floor play (`POST /sessions`
+is retired). Only the visit leader's bound card validates at game kiosks.
 
 - `GET/POST /companies`, `GET/PUT/DELETE /companies/{id}`
   - `DELETE` is blocked (`400`) if the company has an active (open) session.

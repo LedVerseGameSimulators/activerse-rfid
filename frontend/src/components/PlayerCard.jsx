@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import SessionRoster from './SessionRoster'
 
-export default function PlayerCard({ player, activeSession, onIssue, onAdjust, onBindCard, onTopUp, onRosterChanged }) {
+export default function PlayerCard({ player, activeSession, onStartVisit, onAdjust, onBindCard, onTopUp, onRosterChanged }) {
   if (!player) return null
 
   const hasCard = Boolean(player.card_id)
@@ -40,7 +40,7 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
         <p style={{ fontSize: 13, color: '#9aa0a6', marginBottom: 8 }}>Onboarding status</p>
         <StatusLine done label="Registered" detail={player.phone} />
         <StatusLine done={hasCard} label="RFID card bound" detail={hasCard ? player.card_id : 'Go to Players → Bind Card'} />
-        <StatusLine done={Boolean(activeSession)} label="Session issued" detail={activeSession ? `${activeSession.minutes_remaining} min left` : 'After card is bound'} />
+        <StatusLine done={Boolean(activeSession)} label="Visit active" detail={activeSession ? `${activeSession.minutes_remaining} min left` : 'Start Visit after card is bound'} />
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: '1rem' }}>
@@ -67,19 +67,27 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
 
       {hasCard && !activeSession && onTeamGroup && (
         <p style={{ ...muted, marginTop: '1rem', color: '#fcc419' }}>
-          Player is on a team group — use Start Visit on that group (solo group is kept separately).
+          On a team — use Start Visit on the team group (or solo group for individual play).
+          Members do not scan at kiosks; only the visit leader&apos;s card works.
         </p>
       )}
 
-      {hasCard && !activeSession && !onTeamGroup && (
-        <button style={{ ...btnSm, marginTop: '1rem' }} onClick={() => onIssue(player)}>
-          Issue Session
-        </button>
+      {hasCard && !activeSession && (
+        <div style={{ display: 'flex', gap: 8, marginTop: '1rem', flexWrap: 'wrap' }}>
+          <button style={{ ...btnSm, background: '#2f9e44' }} onClick={() => onStartVisit(player)}>
+            Start Visit
+          </button>
+          {player.solo_group_id && (
+            <Link to={`/groups/${player.solo_group_id}`} style={{ ...btnSm, textDecoration: 'none', background: '#495057' }}>
+              Open solo group
+            </Link>
+          )}
+        </div>
       )}
 
       {!hasCard && (
         <p style={{ ...muted, marginTop: '1rem', color: '#fcc419' }}>
-          Next: open Players tab to bind an RFID card before issuing a session.
+          Bind an RFID card before starting a visit.
         </p>
       )}
     </div>

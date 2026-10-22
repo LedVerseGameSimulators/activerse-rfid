@@ -57,6 +57,21 @@ def get_player(db: Database, player_id: int):
     player["sessions"] = sessions
     player["scores"] = [dict(s) for s in scores] if scores else []
     player["recharge_history"] = db.search_recharge_tb_by_id(player_id)
+    solo_gid = db.get_solo_group_id(player_id)
+    if solo_gid is None:
+        db.ensure_solo_group_for_player(player_id)
+        solo_gid = db.get_solo_group_id(player_id)
+    player["solo_group_id"] = solo_gid
+    player["groups"] = [
+        {
+            "id": g["id"],
+            "name": g["name"],
+            "kind": g.get("kind") or "team",
+            "company_name": g.get("company_name"),
+            "archived_at": g.get("archived_at"),
+        }
+        for g in db.list_groups_for_player(player_id, include_archived=False)
+    ]
     return player
 
 

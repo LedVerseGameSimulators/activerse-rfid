@@ -126,9 +126,12 @@ def test_guard_validate_insufficient_time(db):
     assert out["reason"] == "insufficient_time"
 
 
-@pytest.mark.skip(reason="P3: POST /sessions not retired until Phase 3")
-def test_guard_post_sessions_retired(client):
-    pass
+def test_guard_post_sessions_retired(client, db):
+    leader = _make_player(db, "555-g099", "Retired", credit_minutes=60)
+    _bind_card(db, leader, "GUARDRET0001")
+    resp = client.post("/sessions", json={"player_id": leader, "duration_min": 30})
+    assert resp.status_code == 410
+    assert "group" in resp.json()["detail"].lower()
 
 
 def test_guard_validate_after_multi_group_migration(db):

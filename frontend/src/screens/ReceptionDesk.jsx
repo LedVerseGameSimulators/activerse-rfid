@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import PlayerSearch from './PlayerSearch'
 import PlayerCard from '../components/PlayerCard'
 import RegisterPlayer from './RegisterPlayer'
-import IssueSession from './IssueSession'
+import StartVisit from './StartVisit'
 import AdjustSession from './AdjustSession'
 import BindCard from './BindCard'
 import TopUp from './TopUp'
@@ -12,7 +12,7 @@ export default function ReceptionDesk() {
   const [mode, setMode] = useState('returning') // new | returning
   const [selected, setSelected] = useState(null)
   const [activeSession, setActiveSession] = useState(null)
-  const [showIssue, setShowIssue] = useState(false)
+  const [showStartVisit, setShowStartVisit] = useState(false)
   const [showAdjust, setShowAdjust] = useState(false)
   const [showBind, setShowBind] = useState(false)
   const [showTopUp, setShowTopUp] = useState(false)
@@ -66,7 +66,8 @@ export default function ReceptionDesk() {
     <div>
       <h1 style={{ marginBottom: '0.5rem' }}>Reception Desk</h1>
       <p style={{ color: '#9aa0a6', marginBottom: '1.5rem', fontSize: 14 }}>
-        Step 1: Register new visitors · Step 2 (later): bind card · Step 3 (later): issue session
+        Register → bind card → Start Visit on the player&apos;s group (solo group for individuals).
+        Only the visit leader scans at game kiosks.
       </p>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: '1.5rem' }}>
@@ -96,7 +97,7 @@ export default function ReceptionDesk() {
               <PlayerCard
                 player={selected}
                 activeSession={activeSession}
-                onIssue={() => setShowIssue(true)}
+                onStartVisit={() => setShowStartVisit(true)}
                 onAdjust={() => setShowAdjust(true)}
                 onBindCard={() => setShowBind(true)}
                 onTopUp={() => setShowTopUp(true)}
@@ -107,11 +108,11 @@ export default function ReceptionDesk() {
         </>
       )}
 
-      {showIssue && selected && (
-        <IssueSession
+      {showStartVisit && selected && (
+        <StartVisit
           player={selected}
-          onDone={() => { setShowIssue(false); refresh() }}
-          onCancel={() => setShowIssue(false)}
+          onDone={() => { setShowStartVisit(false); refreshPlayer() }}
+          onCancel={() => setShowStartVisit(false)}
         />
       )}
       {showAdjust && activeSession && (

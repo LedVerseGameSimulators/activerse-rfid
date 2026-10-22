@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from .config import DEFAULT_SESSION_MINUTES, MIN_MINUTES_TO_START
+from .config import MIN_MINUTES_TO_START
 from .database import Database
 
 
@@ -29,37 +29,14 @@ def _roster_payload(db: Database, session_id: int):
     ]
 
 
-def issue_session(db: Database, player_id: int, duration_min: int = DEFAULT_SESSION_MINUTES,
-                  notes: str = ""):
-    """Deducts the full session duration from credit_balance up front; early close
-    refunds unused clock minutes to the payer (P1). Seeds payer onto session_roster."""
-    rows = db.search_custom_tb_by_id(player_id)
-    if not rows:
-        raise HTTPException(404, "Player not found")
+POST_SESSIONS_RETIRED_DETAIL = (
+    "Start a visit from the player's group instead."
+)
 
-    card_id = rows[0].get("card_id") or ""
-    if not card_id:
-        raise HTTPException(400, "Bind an RFID card before issuing a session.")
 
-    try:
-        sid, issued_at, expiry_at, balance_after = db.issue_session_atomic(
-            player_id, card_id, duration_min, notes
-        )
-    except ValueError as e:
-        msg = str(e)
-        raise HTTPException(404 if msg == "Player not found" else 400, msg)
-
-    return {
-        "session_id": sid,
-        "player_id": player_id,
-        "card_id": card_id or None,
-        "issued_at": issued_at,
-        "expiry_at": expiry_at,
-        "duration_min": duration_min,
-        "minutes_remaining": _minutes_remaining(expiry_at),
-        "credit_balance_after": balance_after,
-        "roster": _roster_payload(db, sid),
-    }
+def issue_session_retired():
+    """Solo POST /sessions was removed in P3 — floor play starts via Start Visit on a group."""
+    raise HTTPException(410, POST_SESSIONS_RETIRED_DETAIL)
 
 
 def get_active_sessions(db: Database):

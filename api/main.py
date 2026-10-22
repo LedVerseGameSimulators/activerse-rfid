@@ -168,7 +168,7 @@ async def topup_player(player_id: int, body: TopUpRequest):
 
 @app.post("/sessions")
 async def create_session(body: SessionCreate):
-    return sessions.issue_session(get_db(), body.player_id, body.duration_min, body.notes or "")
+    return sessions.issue_session_retired()
 
 
 @app.get("/sessions/active")
