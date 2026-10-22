@@ -132,8 +132,11 @@ def set_leader(db: Database, group_id: int, player_id: int):
 
 
 def start_visit(db: Database, group_id: int, duration_min: int, card_id: Optional[str] = None):
-    if not db.get_group(group_id):
+    row = db.get_group(group_id)
+    if not row:
         raise HTTPException(404, "Group not found")
+    if row.get("archived_at"):
+        raise HTTPException(400, "Group is archived; unarchive it first.")
     try:
         result = db.issue_group_visit_atomic(
             group_id, duration_min, card_id=card_id, notes=f"group:{group_id}"

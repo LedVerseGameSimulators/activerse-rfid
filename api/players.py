@@ -154,7 +154,10 @@ def bind_card(db: Database, player_id: int, card_id: str):
 
 
 def delete_player(db: Database, player_id: int):
-    db.delete_player(player_id)
+    try:
+        db.delete_player(player_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"success": True}
 
 

@@ -798,7 +798,73 @@ class Database:
         self._execute(f"DELETE FROM {table}")
 
     def delete_player(self, player_id: int):
-        self._execute("DELETE FROM custom_info WHERE custom_id = ?", (player_id,))
+        """Remove player row and org links; archive or drop solo group as needed."""
+        with self._lock:
+            con = self._conn()
+            try:
+                row = con.execute(
+                    "SELECT custom_id FROM custom_info WHERE custom_id = ?", (player_id,)
+                ).fetchone()
+                if not row:
+                    raise ValueError("Player not found")
+
+                now = self._now_iso()
+                busy = con.execute(
+                    "SELECT ps.id FROM session_roster sr "
+                    "JOIN player_sessions ps ON ps.id = sr.session_id "
+                    "WHERE sr.player_id = ? AND ps.closed_at IS NULL AND ps.expiry_at > ? "
+                    "LIMIT 1",
+                    (player_id, now),
+                ).fetchone()
+                if busy:
+                    raise ValueError(
+                        f"Player has an active visit (session #{busy['id']}); close it first."
+                    )
+                own = con.execute(
+                    "SELECT id FROM player_sessions WHERE player_id = ? "
+                    "AND closed_at IS NULL AND expiry_at > ? LIMIT 1",
+                    (player_id, now),
+                ).fetchone()
+                if own:
+                    raise ValueError(
+                        f"Player has an open payer session #{own['id']}; close it first."
+                    )
+
+                led = con.execute(
+                    "SELECT g.id, g.name FROM groups g "
+                    "WHERE g.leader_player_id = ? AND COALESCE(g.kind, 'team') != 'solo' "
+                    "AND g.archived_at IS NULL LIMIT 1",
+                    (player_id,),
+                ).fetchone()
+                if led:
+                    raise ValueError(
+                        f"Player is the leader of team '{led['name']}'; assign a new leader first."
+                    )
+
+                solo_row = con.execute(
+                    "SELECT g.id FROM groups g "
+                    "JOIN group_members gm ON gm.group_id = g.id "
+                    "WHERE gm.player_id = ? AND g.kind = 'solo' LIMIT 1",
+                    (player_id,),
+                ).fetchone()
+                solo_gid = int(solo_row["id"]) if solo_row else None
+
+                con.execute("DELETE FROM group_members WHERE player_id = ?", (player_id,))
+
+                if solo_gid is not None:
+                    if self._group_has_history_conn(con, solo_gid):
+                        self._archive_group_locked(con, solo_gid, allow_solo=True)
+                    else:
+                        con.execute("DELETE FROM groups WHERE id = ?", (solo_gid,))
+
+                con.execute("DELETE FROM company_members WHERE player_id = ?", (player_id,))
+                con.execute("DELETE FROM custom_info WHERE custom_id = ?", (player_id,))
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
 
     def search_recharge_tb_by_id(self, custom_id: int):
         rows = self._execute(
@@ -1062,6 +1128,8 @@ class Database:
                 group = con.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
                 if not group:
                     raise ValueError("Group not found")
+                if group["archived_at"]:
+                    raise ValueError("Group is archived; unarchive it first.")
                 leader_id = group["leader_player_id"]
                 if not leader_id:
                     raise ValueError("Set a team leader before starting a visit")
@@ -1219,6 +1287,14 @@ class Database:
                 now = self._now_iso()
                 if (session["expiry_at"] or "") <= now:
                     raise ValueError("Session expired")
+
+                if session["group_id"]:
+                    grp = con.execute(
+                        "SELECT archived_at FROM groups WHERE id = ?",
+                        (session["group_id"],),
+                    ).fetchone()
+                    if grp and grp["archived_at"]:
+                        raise ValueError("Group is archived; unarchive it first.")
 
                 player = con.execute(
                     "SELECT custom_id FROM custom_info WHERE custom_id = ?",
@@ -1818,6 +1894,7 @@ class Database:
                              play_mode: Optional[str] = None, min_size: Optional[int] = None,
                              max_size: Optional[int] = None, two_card: Optional[bool] = None,
                              include_archived: bool = False):
+        # No default min_size here — group-size filtering is explicit (P4 team-tab default).
         clauses = [
             "cts.session_id IS NOT NULL",
             "cts.group_id IS NOT NULL",
@@ -2165,43 +2242,65 @@ class Database:
         )
         return self.get_group(group_id)
 
-    def _group_has_history(self, group_id: int) -> bool:
-        if self._execute(
-            "SELECT 1 FROM central_scores WHERE group_id = ? LIMIT 1",
-            (group_id,), fetch="one",
-        ):
+    @staticmethod
+    def _group_has_history_conn(con, group_id: int) -> bool:
+        if con.execute(
+            "SELECT 1 FROM central_scores WHERE group_id = ? LIMIT 1", (group_id,)
+        ).fetchone():
             return True
-        if self._execute(
-            "SELECT 1 FROM central_team_scores WHERE group_id = ? LIMIT 1",
-            (group_id,), fetch="one",
-        ):
+        if con.execute(
+            "SELECT 1 FROM central_team_scores WHERE group_id = ? LIMIT 1", (group_id,)
+        ).fetchone():
             return True
-        if self._execute(
-            "SELECT 1 FROM player_sessions WHERE group_id = ? LIMIT 1",
-            (group_id,), fetch="one",
-        ):
+        if con.execute(
+            "SELECT 1 FROM player_sessions WHERE group_id = ? LIMIT 1", (group_id,)
+        ).fetchone():
             return True
         return False
+
+    def _group_has_history(self, group_id: int) -> bool:
+        with self._lock:
+            con = self._conn()
+            try:
+                return self._group_has_history_conn(con, group_id)
+            finally:
+                con.close()
+
+    def _archive_group_locked(self, con, group_id: int, allow_solo: bool = False):
+        row = con.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+        if not row:
+            raise ValueError("Group not found")
+        if row["kind"] == "solo" and not allow_solo:
+            raise ValueError("Cannot archive a player's solo group")
+        now = self._now_iso()
+        open_session = con.execute(
+            "SELECT 1 FROM player_sessions WHERE group_id = ? AND closed_at IS NULL "
+            "AND expiry_at > ? LIMIT 1",
+            (group_id, now),
+        ).fetchone()
+        if open_session:
+            raise ValueError(
+                "Cannot archive group with an active visit; close the session first."
+            )
+        con.execute(
+            "UPDATE groups SET archived_at = ? WHERE id = ?",
+            (now, group_id),
+        )
 
     def archive_group(self, group_id: int):
         row = self.get_group(group_id)
         if not row:
             raise ValueError("Group not found")
-        if row.get("kind") == "solo":
-            raise ValueError("Cannot archive a player's solo group")
-        now = self._now_iso()
-        open_session = self._execute(
-            "SELECT 1 FROM player_sessions WHERE group_id = ? AND closed_at IS NULL "
-            "AND expiry_at > ? LIMIT 1", (group_id, now), fetch="one"
-        )
-        if open_session:
-            raise ValueError(
-                "Cannot archive group with an active visit; close the session first."
-            )
-        self._execute(
-            "UPDATE groups SET archived_at = ? WHERE id = ?",
-            (now, group_id),
-        )
+        with self._lock:
+            con = self._conn()
+            try:
+                self._archive_group_locked(con, group_id, allow_solo=False)
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
         return self.get_group(group_id)
 
     def unarchive_group(self, group_id: int):
@@ -2264,15 +2363,16 @@ class Database:
         )
 
     def add_group_member_atomic(self, group_id: int, player_id: int):
-        """Enforces same-company-as-group (auto-joins company if unaffiliated,
-        rejects if affiliated elsewhere) + at-most-one-group-at-a-time. Walk-in
-        groups (company_id IS NULL) skip all company checks entirely."""
+        """Same-company rules for corporate groups; multi-group membership allowed.
+        Walk-in groups (company_id IS NULL) skip company checks."""
         with self._lock:
             con = self._conn()
             try:
                 group = con.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
                 if not group:
                     raise ValueError("Group not found")
+                if group["archived_at"]:
+                    raise ValueError("Group is archived; unarchive it first.")
                 company_id = group["company_id"]
 
                 if company_id is not None:
