@@ -189,6 +189,10 @@ def test_stats_bad_date_422(client, p5):
     pid = p5["leader"]
     assert client.get(f"/stats/player/{pid}?date_from=20260101").status_code == 422
     assert client.get(f"/stats/player/{pid}?play_mode=invalid").status_code == 422
+    assert client.get(
+        f"/stats/player/{pid}?date_from=2026-10-31&date_to=2026-10-01"
+    ).status_code == 422
+    assert client.get(f"/stats/player/{pid}?period=not_a_period").status_code == 422
 
 
 def test_player_stats_numbers(client, p5):
@@ -242,6 +246,9 @@ def test_group_team_battle_head_to_head(client, p5):
     assert body["team_plays"]["matches"] >= 1
     h2h = body["team_plays"]["head_to_head"]
     assert h2h["wins"] + h2h["losses"] + h2h["draws"] >= 1
+    assert h2h["matches"] == (
+        h2h["wins"] + h2h["losses"] + h2h["draws"] + h2h["unresolved_matches"]
+    )
 
 
 def test_company_stamped_only(client, p5, db):
@@ -304,6 +311,122 @@ def test_stats_read_only_no_db_writes(client, p5, db):
     client.get("/stats/tournament/1")
     after = {t: db._execute(f"SELECT COUNT(*) AS c FROM {t}", fetch="one")["c"] for t in tables}
     assert before == after
+
+
+def test_tournament_best_rank_solo_and_group(client, db):
+    from api import stats as stats_mod
+
+    subject = _make_player(db, "555-rk01", "RankSubject")
+    db.upsert_central_score({
+        "player_id": subject, "card_id": "RKSUB", "game": "hoops",
+        "played_at": "2026-10-15", "score": 100.0,
+    })
+    for score, n in ((200.0, "2"), (150.0, "3")):
+        pid = _make_player(db, f"555-rk{n}", f"Better{n}")
+        db.upsert_central_score({
+            "player_id": pid, "card_id": f"RK{n}", "game": "hoops",
+            "played_at": "2026-10-15", "score": score,
+        })
+
+    company = db.create_company("RankCo")
+    cid = company["id"]
+    g_subject = db.create_group(cid, "Rank Blue", leader_player_id=subject)
+    db.add_group_member_atomic(g_subject["id"], subject)
+    db.upsert_central_team_score({
+        "session_id": 1, "group_id": g_subject["id"], "card_id": "GT1",
+        "game": "hoops", "played_at": "2026-10-16", "score": 100.0,
+        "company_id": cid,
+    })
+    g_other = db.create_group(cid, "Rank Red", leader_player_id=subject)
+    db.upsert_central_team_score({
+        "session_id": 2, "group_id": g_other["id"], "card_id": "GT2",
+        "game": "hoops", "played_at": "2026-10-16", "score": 300.0,
+        "company_id": cid,
+    })
+
+    tdict = {
+        "scope": "global", "company_id": None,
+        "starts_at": "2026-10-01", "ends_at": "2026-10-31",
+    }
+    assert stats_mod._solo_tournament_best_rank(
+        db, tdict, "2026-10-01", "2026-11-01",
+        game="all", play_mode=None, min_size=None, max_size=None,
+        best_score=100.0,
+    ) == 3
+    assert stats_mod._solo_tournament_best_rank(
+        db, tdict, "2026-10-01", "2026-11-01",
+        game="all", play_mode=None, min_size=None, max_size=None,
+        best_score=None,
+    ) is None
+    assert stats_mod._team_tournament_best_rank(
+        db, tdict, "2026-10-01", "2026-11-01",
+        game="all", play_mode=None, min_size=None, max_size=None,
+        best_score=100.0,
+    ) == 2
+
+
+def test_vacuous_stats_window_null(db, p5):
+    from datetime import date
+    from api import stats as stats_mod
+
+    out = stats_mod.get_player_stats(
+        db, p5["leader"],
+        period="week",
+        date_from="2026-01-01",
+        date_to="2026-01-31",
+        today=date(2026, 6, 15),
+    )
+    assert out["window"] is None
+    assert out["plays"]["count"] == 0
+
+
+def test_game_top_players_omit_card_id(client, p5):
+    r = client.get("/stats/game/hoops")
+    assert r.status_code == 200
+    for row in r.json()["top_players"]:
+        assert "card_id" not in row
+
+
+def test_tournament_stats_entrants_filtered(client, db, monkeypatch):
+    p1 = _make_player(db, "555-te1", "E1")
+    p2 = _make_player(db, "555-te2", "E2")
+    db.upsert_central_score({
+        "player_id": p1, "card_id": "TE1", "game": "hoops",
+        "played_at": "2026-10-10", "score": 50,
+    })
+    db.upsert_central_score({
+        "player_id": p2, "card_id": "TE2", "game": "laser",
+        "played_at": "2026-10-10", "score": 90,
+    })
+    cr = client.post("/tournaments", json={
+        "name": "Entrant filter", "type": "solo", "scope": "global",
+        "starts_at": "2026-10-01", "ends_at": "2026-10-31",
+    })
+    tid = cr.json()["id"]
+    all_stats = client.get(f"/stats/tournament/{tid}").json()
+    hoops_stats = client.get(f"/stats/tournament/{tid}?game=hoops").json()
+    assert all_stats["totals"]["entrants"] == 2
+    assert all_stats["totals"]["tournament_entrants"] == 2
+    assert hoops_stats["totals"]["entrants"] == 1
+    assert hoops_stats["totals"]["plays"] == 1
+
+
+def test_match_key_index_idempotent(tmp_path, monkeypatch):
+    import importlib
+    import sys
+
+    db_path = tmp_path / "idx.sqlite"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    for mod in ("api.config", "api.database"):
+        sys.modules.pop(mod, None)
+    db1 = importlib.import_module("api.database").Database()
+    importlib.import_module("api.database").Database()
+    row = db1._execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_cts_match_key'",
+        fetch="one",
+    )
+    assert row is not None
+    assert db1._execute("SELECT COUNT(*) AS c FROM sqlite_master WHERE name='idx_cts_match_key'", fetch="one")["c"] == 1
 
 
 def test_per_day_mixed_timestamp_formats(client, db):

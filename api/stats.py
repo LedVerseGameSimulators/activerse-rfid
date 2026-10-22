@@ -24,7 +24,11 @@ from . import dashboard
 from .sessions import _minutes_remaining
 
 VALID_PLAY_MODES = frozenset({"quick_play", "team_battle", "tournament"})
+VALID_PERIODS = frozenset({"today", "week", "month", "alltime"})
 _STRICT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_LEGACY_PLAY_TIME_NOTE = (
+    "excludes visits started before groups existed"
+)
 
 _RECENT_PLAYS_LIMIT = 20
 _LEDGER_EVENTS_LIMIT = 50
@@ -51,12 +55,175 @@ def _check_play_mode(play_mode: Optional[str]) -> None:
         raise HTTPException(422, "play_mode must be quick_play, team_battle, or tournament")
 
 
+def _check_period(period: str) -> None:
+    if period not in VALID_PERIODS:
+        raise HTTPException(422, "period must be today, week, month, or alltime")
+
+
+def _validate_date_range(date_from: Optional[str], date_to: Optional[str]) -> None:
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(422, "date_from must be on or before date_to")
+
+
+def _window_json(
+    lo: Optional[str], hi: Optional[str], vacuous: bool
+) -> Optional[dict]:
+    if vacuous:
+        return None
+    return {"from": lo, "to_exclusive": hi}
+
+
+def _append_earned_window(
+    clauses: list[str],
+    params: list[Any],
+    lo: Optional[str],
+    hi: Optional[str],
+) -> None:
+    _append_played_window(clauses, params, "earned_at", lo, hi)
+
+
+def _gap_fill_per_day(
+    rows: list[dict],
+    lo: Optional[str],
+    hi: Optional[str],
+    *,
+    today: Optional[date] = None,
+    limit: int = _PER_DAY_LIMIT,
+) -> list[dict]:
+    """Ascending date buckets for the last `limit` days within the window."""
+    today = today or date.today()
+    counts = {r["date"]: int(r["plays"]) for r in rows if r.get("date")}
+    if hi:
+        end = date.fromisoformat(hi) - timedelta(days=1)
+    else:
+        end = today
+    start = end - timedelta(days=limit - 1)
+    if lo:
+        start = max(start, date.fromisoformat(lo))
+    out: list[dict] = []
+    d = start
+    while d <= end:
+        ds = d.isoformat()
+        out.append({"date": ds, "plays": counts.get(ds, 0)})
+        d += timedelta(days=1)
+    return out
+
+
+def _legacy_solo_visit_start_note_company(db: Database, company_id: int) -> Optional[str]:
+    row = db._execute(
+        "SELECT 1 FROM play_time_events pte "
+        "JOIN company_members cm ON cm.player_id = pte.player_id "
+        "WHERE cm.company_id = ? AND pte.source = 'visit_start' AND pte.group_id IS NULL "
+        "LIMIT 1",
+        (company_id,),
+        fetch="one",
+    )
+    return _LEGACY_PLAY_TIME_NOTE if row else None
+
+
+def _legacy_solo_visit_start_note_group(db: Database, group_id: int) -> Optional[str]:
+    row = db._execute(
+        "SELECT 1 FROM play_time_events pte "
+        "JOIN group_members gm ON gm.player_id = pte.player_id "
+        "WHERE gm.group_id = ? AND pte.source = 'visit_start' AND pte.group_id IS NULL "
+        "LIMIT 1",
+        (group_id,),
+        fetch="one",
+    )
+    return _LEGACY_PLAY_TIME_NOTE if row else None
+
+
+def _apply_tournament_company_scope(
+    fw: str, params: list[Any], tdict: dict
+) -> tuple[str, list[Any]]:
+    if tdict.get("scope") == "company":
+        fw = fw.replace("WHERE", "WHERE cs.company_id = ? AND", 1)
+        params = [tdict["company_id"]] + params
+    return fw, params
+
+
+def _apply_tournament_company_scope_team(
+    fw: str, params: list[Any], tdict: dict
+) -> tuple[str, list[Any]]:
+    if tdict.get("scope") == "company":
+        fw = fw.replace("WHERE", "WHERE cts.company_id = ? AND", 1)
+        params = [tdict["company_id"]] + params
+    return fw, params
+
+
+def _solo_tournament_best_rank(
+    db: Database,
+    tdict: dict,
+    w_lo: Optional[str],
+    w_hi: Optional[str],
+    *,
+    game: str,
+    play_mode: Optional[str],
+    min_size: Optional[int],
+    max_size: Optional[int],
+    best_score: Optional[float],
+) -> Optional[int]:
+    if best_score is None:
+        return None
+    bfw, bparams = _solo_score_where(
+        lo=w_lo,
+        hi=w_hi,
+        game=game,
+        play_mode=play_mode,
+        include_archived=False,
+        min_size=min_size,
+        max_size=max_size,
+        player_id=None,
+    )
+    bfw, bparams = _apply_tournament_company_scope(bfw, bparams, tdict)
+    rank_row = db._execute(
+        f"SELECT COUNT(*) AS c {bfw} AND cs.score > ?",
+        tuple(bparams) + (best_score,),
+        fetch="one",
+    )
+    return 1 + int(rank_row["c"] or 0)
+
+
+def _team_tournament_best_rank(
+    db: Database,
+    tdict: dict,
+    w_lo: Optional[str],
+    w_hi: Optional[str],
+    *,
+    game: str,
+    play_mode: Optional[str],
+    min_size: Optional[int],
+    max_size: Optional[int],
+    best_score: Optional[float],
+) -> Optional[int]:
+    if best_score is None:
+        return None
+    bfw, bparams = _team_score_where(
+        lo=w_lo,
+        hi=w_hi,
+        game=game,
+        play_mode=play_mode,
+        include_archived=False,
+        min_size=min_size,
+        max_size=max_size,
+        group_id=None,
+    )
+    bfw, bparams = _apply_tournament_company_scope_team(bfw, bparams, tdict)
+    rank_row = db._execute(
+        f"SELECT COUNT(*) AS c {bfw} AND cts.score > ?",
+        tuple(bparams) + (best_score,),
+        fetch="one",
+    )
+    return 1 + int(rank_row["c"] or 0)
+
+
 def _resolve_play_window(
     period: str,
     date_from: Optional[str],
     date_to: Optional[str],
     today: Optional[date] = None,
 ) -> tuple[Optional[str], Optional[str], bool]:
+    _check_period(period)
     today = today or date.today()
     p_lo, p_hi = period_bounds(period, today)
     d_lo = date_from
@@ -247,36 +414,53 @@ def _session_status(session: dict) -> str:
     return "open"
 
 
-def _head_to_head_record(db: Database, tfw: str, params: list) -> dict:
+def _head_to_head_record(
+    db: Database, tfw: str, params: list, group_id: int
+) -> dict:
     """W/L/draw from Team Battle rows linked by match_key."""
-    from_joined = tfw.replace(
-        "FROM central_team_scores cts",
-        "FROM central_team_scores cts "
-        "JOIN central_team_scores opp ON opp.match_key = cts.match_key "
-        "AND opp.id != cts.id AND opp.group_id != cts.group_id",
-        1,
+    key_rows = db._execute(
+        f"SELECT DISTINCT cts.match_key AS match_key {tfw} AND cts.match_key IS NOT NULL",
+        tuple(params),
+        fetch="all",
     )
-    q = (
-        "SELECT cts.match_key, cts.score AS our_score, opp.score AS opp_score "
-        f"{from_joined} AND cts.match_key IS NOT NULL"
-    )
-    rows = db._execute(q, tuple(params), fetch="all")
-    wins = losses = draws = 0
-    seen: set[str] = set()
-    for r in rows or []:
-        mk = r["match_key"]
-        if mk in seen:
+    wins = losses = draws = unresolved = 0
+    for kr in key_rows or []:
+        mk = kr["match_key"]
+        ours_row = db._execute(
+            f"SELECT cts.score AS score {tfw} AND cts.match_key = ? "
+            "ORDER BY cts.id LIMIT 1",
+            tuple(params) + (mk,),
+            fetch="one",
+        )
+        if not ours_row:
+            unresolved += 1
             continue
-        seen.add(mk)
-        ours = float(r["our_score"] or 0)
-        theirs = float(r["opp_score"] or 0)
+        opp_row = db._execute(
+            "SELECT score FROM central_team_scores "
+            "WHERE match_key = ? AND group_id IS NOT NULL AND group_id != ? "
+            "ORDER BY id LIMIT 1",
+            (mk, group_id),
+            fetch="one",
+        )
+        if not opp_row:
+            unresolved += 1
+            continue
+        ours = float(ours_row["score"] or 0)
+        theirs = float(opp_row["score"] or 0)
         if ours > theirs:
             wins += 1
         elif ours < theirs:
             losses += 1
         else:
             draws += 1
-    return {"wins": wins, "losses": losses, "draws": draws}
+    matches = len(key_rows or [])
+    return {
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "unresolved_matches": unresolved,
+        "matches": matches,
+    }
 
 
 def get_player_stats(
@@ -296,6 +480,7 @@ def get_player_stats(
     _check_play_mode(play_mode)
     d_from = _parse_date_field(date_from, "date_from")
     d_to = _parse_date_field(date_to, "date_to")
+    _validate_date_range(d_from, d_to)
     lo, hi, vacuous = _resolve_play_window(period, d_from, d_to, today=today)
 
     player_rows = db.search_custom_tb_by_id(player_id)
@@ -390,10 +575,14 @@ def get_player_stats(
         by_size = [{"n": int(r["n"]), "plays": int(r["plays"])} for r in (rows or [])]
 
     pt = _play_time_totals(db, player_id=player_id, lo=lo, hi=hi)
+    pte_clauses = ["player_id = ?"]
+    pte_params: list[Any] = [player_id]
+    _append_earned_window(pte_clauses, pte_params, lo, hi)
+    pte_where = " AND ".join(pte_clauses)
     ledger_rows = db._execute(
-        "SELECT earned_at, source, minutes, session_id FROM play_time_events "
-        "WHERE player_id = ? ORDER BY earned_at DESC LIMIT ?",
-        (player_id, _LEDGER_EVENTS_LIMIT),
+        f"SELECT earned_at, source, minutes, session_id FROM play_time_events "
+        f"WHERE {pte_where} ORDER BY earned_at DESC LIMIT ?",
+        tuple(pte_params) + (_LEDGER_EVENTS_LIMIT,),
         fetch="all",
     )
     pt["events"] = [
@@ -446,13 +635,7 @@ def get_player_stats(
             max_size=max_size,
             player_id=player_id,
         )
-        if tdict.get("scope") == "company":
-            tfw = tfw.replace(
-                "WHERE",
-                "WHERE cs.company_id = ? AND",
-                1,
-            )
-            tparams = [tdict["company_id"]] + tparams
+        tfw, tparams = _apply_tournament_company_scope(tfw, tparams, tdict)
         agg = db._execute(
             f"SELECT COUNT(*) AS plays, MAX(cs.score) AS best {tfw}",
             tuple(tparams),
@@ -462,12 +645,12 @@ def get_player_stats(
         if plays_n == 0:
             continue
         best = float(agg["best"] or 0)
-        rank_row = db._execute(
-            f"SELECT COUNT(*) AS c {tfw} AND cs.score > ?",
-            tuple(tparams) + (best,),
-            fetch="one",
+        best_rank = _solo_tournament_best_rank(
+            db, tdict, w_lo, w_hi,
+            game=game, play_mode=play_mode,
+            min_size=min_size, max_size=max_size,
+            best_score=best,
         )
-        best_rank = 1 + int(rank_row["c"] or 0) if rank_row else 1
         tournaments_out.append({
             "id": tdict["id"],
             "name": tdict["name"],
@@ -537,7 +720,7 @@ def get_player_stats(
             "min_size": min_size,
             "max_size": max_size,
         },
-        "window": {"from": lo, "to_exclusive": hi},
+        "window": _window_json(lo, hi, vacuous),
     }
 
 
@@ -579,8 +762,9 @@ def get_session_stats(db: Database, session_id: int):
             "player_id": m["player_id"],
             "name": m["name"],
             "is_payer": bool(m.get("is_payer")),
-            "joined_at": pte["earned_at"] if pte else session.get("issued_at"),
-            "joined_via": pte["source"] if pte else "visit_start",
+            "joined_at": pte["earned_at"] if pte else None,
+            "joined_via": pte["source"] if pte else "unknown",
+            "joined_source": "ledger",
             "earned_min": round(float(earned_row["m"] or 0), 2) if earned_row else 0.0,
         })
 
@@ -615,7 +799,7 @@ def get_session_stats(db: Database, session_id: int):
     by_member_rows = db._execute(
         "SELECT cs.player_id, ci.name, COUNT(*) AS plays, SUM(cs.score) AS total_share, "
         "MAX(cs.score) AS best_share FROM central_scores cs "
-        "JOIN custom_info ci ON ci.custom_id = cs.player_id "
+        "LEFT JOIN custom_info ci ON ci.custom_id = cs.player_id "
         "WHERE cs.session_id = ? AND cs.player_id IS NOT NULL GROUP BY cs.player_id",
         (session_id,),
         fetch="all",
@@ -623,10 +807,10 @@ def get_session_stats(db: Database, session_id: int):
     by_member = [
         {
             "player_id": r["player_id"],
-            "name": r["name"],
+            "name": r["name"] or f"Deleted player #{r['player_id']}",
             "plays": int(r["plays"]),
             "total_share": round(float(r["total_share"] or 0), 2),
-            "best_share": float(r["best_share"] or 0),
+            "best_share": round(float(r["best_share"] or 0), 4),
         }
         for r in (by_member_rows or [])
     ]
@@ -697,6 +881,7 @@ def get_group_stats(
     _check_play_mode(play_mode)
     d_from = _parse_date_field(date_from, "date_from")
     d_to = _parse_date_field(date_to, "date_to")
+    _validate_date_range(d_from, d_to)
     lo, hi, vacuous = _resolve_play_window(period, d_from, d_to, today=today)
 
     grp = db.get_group(group_id)
@@ -728,14 +913,12 @@ def get_group_stats(
         tuple(tparams),
         fetch="one",
     )
-    match_row = None if vacuous else db._execute(
-        f"SELECT COUNT(DISTINCT cts.match_key) AS matches {tfw} AND cts.match_key IS NOT NULL",
-        tuple(tparams),
-        fetch="one",
-    )
-    h2h = {"wins": 0, "losses": 0, "draws": 0}
+    h2h = {
+        "wins": 0, "losses": 0, "draws": 0,
+        "unresolved_matches": 0, "matches": 0,
+    }
     if not vacuous:
-        h2h = _head_to_head_record(db, tfw, tparams)
+        h2h = _head_to_head_record(db, tfw, tparams, group_id)
 
     sfw, sparams = _solo_score_where(
         lo=lo if not vacuous else "9999-99-99",
@@ -778,19 +961,31 @@ def get_group_stats(
         (group_id, _VISIT_SESSIONS_LIMIT),
         fetch="all",
     )
+    v_clauses = ["group_id = ?"]
+    v_params: list[Any] = [group_id]
+    _append_played_window(v_clauses, v_params, "issued_at", lo, hi)
     visit_count = db._execute(
-        "SELECT COUNT(*) AS c, MAX(issued_at) AS last, SUM(duration_min) AS dur "
-        "FROM player_sessions WHERE group_id = ?",
-        (group_id,),
+        f"SELECT COUNT(*) AS c, MAX(issued_at) AS last, SUM(duration_min) AS dur "
+        f"FROM player_sessions WHERE {' AND '.join(v_clauses)}",
+        tuple(v_params),
         fetch="one",
     )
 
     pt = _play_time_totals(db, group_id=group_id, lo=lo, hi=hi)
+    note = _legacy_solo_visit_start_note_group(db, group_id)
+    if note:
+        pt["note"] = note
+    bp_clauses = [
+        "group_id = ?",
+        "source IN ('visit_start', 'roster_join')",
+    ]
+    bp_params: list[Any] = [group_id]
+    _append_earned_window(bp_clauses, bp_params, lo, hi)
     by_player_rows = db._execute(
-        "SELECT player_id, SUM(minutes) AS earned FROM play_time_events "
-        "WHERE group_id = ? AND source IN ('visit_start', 'roster_join') "
+        f"SELECT player_id, SUM(minutes) AS earned FROM play_time_events "
+        f"WHERE {' AND '.join(bp_clauses)} "
         "GROUP BY player_id ORDER BY earned DESC LIMIT ?",
-        (group_id, _MEMBER_LIST_LIMIT),
+        tuple(bp_params) + (_MEMBER_LIST_LIMIT,),
         fetch="all",
     )
     pt["by_player"] = [
@@ -824,9 +1019,7 @@ def get_group_stats(
             max_size=max_size,
             group_id=group_id,
         )
-        if tdict.get("scope") == "company":
-            gfw = gfw.replace("WHERE", "WHERE cts.company_id = ? AND", 1)
-            gparams = [tdict["company_id"]] + gparams
+        gfw, gparams = _apply_tournament_company_scope_team(gfw, gparams, tdict)
         agg = db._execute(
             f"SELECT COUNT(*) AS plays, MAX(cts.score) AS best {gfw}",
             tuple(gparams),
@@ -836,17 +1029,17 @@ def get_group_stats(
         if plays_n == 0:
             continue
         best = float(agg["best"] or 0)
-        rank_row = db._execute(
-            f"SELECT COUNT(*) AS c {gfw} AND cts.score > ?",
-            tuple(gparams) + (best,),
-            fetch="one",
-        )
         tournaments_out.append({
             "id": tdict["id"],
             "name": tdict["name"],
             "plays": plays_n,
             "best": best,
-            "best_rank": 1 + int(rank_row["c"] or 0) if rank_row else 1,
+            "best_rank": _team_tournament_best_rank(
+                db, tdict, w_lo, w_hi,
+                game=game, play_mode=play_mode,
+                min_size=min_size, max_size=max_size,
+                best_score=best,
+            ),
         })
 
     def _team_breakdown(sql_group: str) -> list:
@@ -919,7 +1112,7 @@ def get_group_stats(
                     else []
                 )
             ],
-            "matches": int(match_row["matches"] or 0) if match_row else 0,
+            "matches": h2h["matches"],
             "head_to_head": h2h,
         },
         "member_shares": member_shares,
@@ -933,7 +1126,7 @@ def get_group_stats(
             "date_to": d_to,
             "include_archived": include_archived,
         },
-        "window": {"from": lo, "to_exclusive": hi},
+        "window": _window_json(lo, hi, vacuous),
     }
 
 
@@ -954,6 +1147,7 @@ def get_company_stats(
     _check_play_mode(play_mode)
     d_from = _parse_date_field(date_from, "date_from")
     d_to = _parse_date_field(date_to, "date_to")
+    _validate_date_range(d_from, d_to)
     lo, hi, vacuous = _resolve_play_window(period, d_from, d_to, today=today)
 
     co = db.get_company(company_id)
@@ -1017,9 +1211,15 @@ def get_company_stats(
         best_share = float(s_agg["best"] or 0) if s_agg else 0.0
 
     pt = _play_time_totals(db, company_id=company_id, lo=lo, hi=hi)
+    note = _legacy_solo_visit_start_note_company(db, company_id)
+    if note:
+        pt["note"] = note
+    vis_clauses = ["company_id = ?"]
+    vis_params: list[Any] = [company_id]
+    _append_played_window(vis_clauses, vis_params, "issued_at", lo, hi)
     visits = db._execute(
-        "SELECT COUNT(*) AS c FROM player_sessions WHERE company_id = ?",
-        (company_id,),
+        f"SELECT COUNT(*) AS c FROM player_sessions WHERE {' AND '.join(vis_clauses)}",
+        tuple(vis_params),
         fetch="one",
     )
 
@@ -1160,7 +1360,7 @@ def get_company_stats(
         "top_players": top_players,
         "top_groups": top_groups,
         "tournaments": tournaments_out,
-        "window": {"from": lo, "to_exclusive": hi},
+        "window": _window_json(lo, hi, vacuous),
     }
 
 
@@ -1182,6 +1382,7 @@ def get_game_stats(
     _check_play_mode(play_mode)
     d_from = _parse_date_field(date_from, "date_from")
     d_to = _parse_date_field(date_to, "date_to")
+    _validate_date_range(d_from, d_to)
     lo, hi, vacuous = _resolve_play_window(period, d_from, d_to, today=today)
 
     health_row = db._execute(
@@ -1194,8 +1395,19 @@ def get_game_stats(
         "last_checked": health_row["last_checked"] if health_row else None,
     }
 
+    lo_eff = lo if not vacuous else "9999-99-99"
     tfw, tparams = _team_score_where(
-        lo=lo if not vacuous else "9999-99-99",
+        lo=lo_eff,
+        hi=hi,
+        game=game_key,
+        play_mode=play_mode,
+        include_archived=include_archived,
+        min_size=min_size,
+        max_size=max_size,
+        require_attribution=True,
+    )
+    tfw_all, tparams_all = _team_score_where(
+        lo=lo_eff,
         hi=hi,
         game=game_key,
         play_mode=play_mode,
@@ -1215,6 +1427,7 @@ def get_game_stats(
     )
     volume = {
         "team_plays": 0,
+        "team_plays_incl_unattributed": 0,
         "matches": 0,
         "shares": 0,
         "unique_players": 0,
@@ -1225,6 +1438,7 @@ def get_game_stats(
     }
     if not vacuous:
         t_cnt = db._execute(f"SELECT COUNT(*) AS c {tfw}", tuple(tparams), fetch="one")
+        t_all = db._execute(f"SELECT COUNT(*) AS c {tfw_all}", tuple(tparams_all), fetch="one")
         m_cnt = db._execute(
             f"SELECT COUNT(DISTINCT cts.match_key) AS c {tfw} AND cts.match_key IS NOT NULL",
             tuple(tparams),
@@ -1241,21 +1455,28 @@ def get_game_stats(
             tuple(tparams),
             fetch="one",
         )
-        per_day = db._execute(
+        per_day_raw = db._execute(
             f"SELECT substr(cts.played_at, 1, 10) AS date, COUNT(*) AS plays {tfw} "
-            "GROUP BY date ORDER BY date DESC LIMIT ?",
-            tuple(tparams) + (_PER_DAY_LIMIT,),
+            "GROUP BY date",
+            tuple(tparams),
             fetch="all",
+        )
+        per_day = _gap_fill_per_day(
+            [dict(r) for r in (per_day_raw or [])],
+            lo,
+            hi,
+            today=today,
         )
         volume = {
             "team_plays": int(t_cnt["c"] or 0) if t_cnt else 0,
+            "team_plays_incl_unattributed": int(t_all["c"] or 0) if t_all else 0,
             "matches": int(m_cnt["c"] or 0) if m_cnt else 0,
             "shares": int(s_cnt["c"] or 0) if s_cnt else 0,
             "unique_players": int(s_cnt["u"] or 0) if s_cnt else 0,
             "unique_groups": int(g_cnt["c"] or 0) if g_cnt else 0,
             "avg_time_used": round(float(avg_row["tu"] or 0), 2) if avg_row else 0.0,
             "avg_roster_size": round(float(avg_row["rs"] or 0), 2) if avg_row else 0.0,
-            "per_day": [{"date": r["date"], "plays": int(r["plays"])} for r in (per_day or [])],
+            "per_day": per_day,
         }
 
     by_mode = []
@@ -1288,7 +1509,7 @@ def get_game_stats(
             ) or []
         ]
 
-    top_players = tournament_leaderboard(
+    top_players_raw = tournament_leaderboard(
         db,
         board="individual",
         use_active=False,
@@ -1301,6 +1522,10 @@ def get_game_stats(
         include_archived=include_archived,
         today=today,
     )
+    top_players = [
+        {k: v for k, v in dict(r).items() if k != "card_id"}
+        for r in top_players_raw
+    ]
     top_teams_raw = tournament_leaderboard(
         db,
         board="team",
@@ -1334,7 +1559,7 @@ def get_game_stats(
         "results": results,
         "top_players": top_players,
         "top_teams": top_teams,
-        "window": {"from": lo, "to_exclusive": hi},
+        "window": _window_json(lo, hi, vacuous),
     }
 
 
@@ -1346,6 +1571,7 @@ def get_tournament_stats(
     game: str = "all",
     today: Optional[date] = None,
 ):
+    _check_period(period)
     row = db._execute(
         "SELECT * FROM tournaments WHERE id = ?", (tournament_id,), fetch="one"
     )
@@ -1364,70 +1590,30 @@ def get_tournament_stats(
     )
     lo, hi = window.get("from"), window.get("to_exclusive")
     vacuous = lo is not None and hi is not None and lo >= hi
+    if vacuous:
+        window = None
 
-    total_plays = tournament_leaderboard_count(
-        db,
-        board=board,
-        tournament_id=tournament_id,
-        use_active=False,
-        period=period,
-        game=game,
-        today=today,
+    tournament_entrants = (
+        tournament_entrant_count(db, tournament_id) if not vacuous else 0
     )
-    entrants = tournament_entrant_count(db, tournament_id) if not vacuous else 0
 
     totals = {
-        "plays": total_plays,
-        "entrants": entrants,
+        "plays": 0,
+        "entrants": 0,
+        "tournament_entrants": tournament_entrants,
         "unique_groups": None,
         "unique_players": None,
         "best_score": 0.0,
         "avg_score": 0.0,
     }
-    if board == "team":
-        totals["unique_groups"] = entrants
-    else:
-        totals["unique_players"] = entrants
+    by_game: list = []
+    by_mode: list = []
+    by_day: list = []
 
-    if not vacuous and total_plays > 0:
-        from_where, params = _build(
-            board,
-            game=game,
-            lo=lo,
-            hi=hi,
-            tournament=trow,
-            company_id=None,
-            group_id=None,
-            play_mode=None,
-            min_size=None,
-            max_size=None,
-            two_card=None,
-            include_archived=False,
-            difficulty=None,
-        )
-        if board == "team":
-            agg = db._execute(
-                f"SELECT MAX(cts.score) AS best, AVG(cts.score) AS avg {from_where}",
-                tuple(params),
-                fetch="one",
-            )
-        else:
-            agg = db._execute(
-                f"SELECT MAX(cs.score) AS best, AVG(cs.score) AS avg {from_where}",
-                tuple(params),
-                fetch="one",
-            )
-        if agg:
-            totals["best_score"] = float(agg["best"] or 0)
-            totals["avg_score"] = round(float(agg["avg"] or 0), 2)
-
-    by_game = []
-    by_mode = []
-    by_day = []
     if not vacuous:
         from_where, params = _build(
             board,
-            game="all",
+            game=game,
             lo=lo,
             hi=hi,
             tournament=trow,
@@ -1444,33 +1630,43 @@ def get_tournament_stats(
         game_col = "cts.game" if board == "team" else "cs.game"
         score_col = "cts.score" if board == "team" else "cs.score"
         mode_col = "cts.play_mode" if board == "team" else "cs.play_mode"
-        if game != "all":
-            from_where += f" AND {game_col} = ?"
-            params = list(params) + [game]
-            total_plays = tournament_leaderboard_count(
-                db,
-                board=board,
-                tournament_id=tournament_id,
-                use_active=False,
-                period=period,
-                game=game,
-                today=today,
+        if board == "team":
+            entrant_expr = "COUNT(DISTINCT cts.group_id)"
+            agg_sql = (
+                f"SELECT COUNT(*) AS plays, {entrant_expr} AS entrants, "
+                f"MAX(cts.score) AS best, AVG(cts.score) AS avg {from_where}"
             )
-            totals["plays"] = total_plays
+        else:
+            entrant_expr = "COUNT(DISTINCT cs.player_id)"
+            agg_sql = (
+                f"SELECT COUNT(*) AS plays, {entrant_expr} AS entrants, "
+                f"MAX(cs.score) AS best, AVG(cs.score) AS avg {from_where}"
+            )
+        agg = db._execute(agg_sql, tuple(params), fetch="one")
+        if agg:
+            totals["plays"] = int(agg["plays"] or 0)
+            totals["entrants"] = int(agg["entrants"] or 0)
+            totals["best_score"] = float(agg["best"] or 0)
+            totals["avg_score"] = round(float(agg["avg"] or 0), 2)
+        if board == "team":
+            totals["unique_groups"] = totals["entrants"]
+        else:
+            totals["unique_players"] = totals["entrants"]
 
-        by_game = [
-            {
-                "game": r["game"],
-                "plays": int(r["plays"]),
-                "best": float(r["best"] or 0),
-            }
-            for r in db._execute(
-                f"SELECT {game_col} AS game, COUNT(*) AS plays, MAX({score_col}) AS best "
-                f"{from_where} GROUP BY {game_col} ORDER BY plays DESC",
-                tuple(params),
-                fetch="all",
-            ) or []
-        ]
+        if game == "all":
+            by_game = [
+                {
+                    "game": r["game"],
+                    "plays": int(r["plays"]),
+                    "best": float(r["best"] or 0),
+                }
+                for r in db._execute(
+                    f"SELECT {game_col} AS game, COUNT(*) AS plays, MAX({score_col}) AS best "
+                    f"{from_where} GROUP BY {game_col} ORDER BY plays DESC",
+                    tuple(params),
+                    fetch="all",
+                ) or []
+            ]
         by_mode = [
             {"play_mode": r["play_mode"], "plays": int(r["plays"])}
             for r in db._execute(
@@ -1480,15 +1676,18 @@ def get_tournament_stats(
                 fetch="all",
             ) or []
         ]
-        by_day = [
-            {"date": r["date"], "plays": int(r["plays"])}
-            for r in db._execute(
-                f"SELECT substr({played_col}, 1, 10) AS date, COUNT(*) AS plays {from_where} "
-                "GROUP BY date ORDER BY date",
-                tuple(params),
-                fetch="all",
-            ) or []
-        ]
+        day_rows = db._execute(
+            f"SELECT substr({played_col}, 1, 10) AS date, COUNT(*) AS plays {from_where} "
+            "GROUP BY date",
+            tuple(params),
+            fetch="all",
+        )
+        by_day = _gap_fill_per_day(
+            [dict(r) for r in (day_rows or [])],
+            lo,
+            hi,
+            today=today,
+        )
 
     top = tournament_leaderboard(
         db,
@@ -1504,6 +1703,12 @@ def get_tournament_stats(
     if board == "team":
         top = dashboard.enrich_team_rows(top)
 
+    company_id = trow.get("company_id")
+    company_name = None
+    if company_id:
+        co = db.get_company(company_id)
+        company_name = co.get("name") if co else None
+
     return {
         "tournament": {
             "id": trow["id"],
@@ -1513,6 +1718,8 @@ def get_tournament_stats(
             "starts_at": trow["starts_at"],
             "ends_at": trow["ends_at"],
             "status": trow["status"],
+            "company_id": company_id,
+            "company_name": company_name,
         },
         "window": window,
         "totals": totals,

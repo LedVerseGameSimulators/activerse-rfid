@@ -397,6 +397,7 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_cts_group       ON central_team_scores(group_id);
                     CREATE INDEX IF NOT EXISTS idx_cts_company     ON central_team_scores(company_id, played_at);
                     CREATE INDEX IF NOT EXISTS idx_cts_session     ON central_team_scores(session_id);
+                    CREATE INDEX IF NOT EXISTS idx_cts_match_key   ON central_team_scores(match_key);
                     CREATE INDEX IF NOT EXISTS idx_pte_company     ON play_time_events(company_id, earned_at);
                     CREATE INDEX IF NOT EXISTS idx_pte_group       ON play_time_events(group_id);
                     CREATE INDEX IF NOT EXISTS idx_ps_group        ON player_sessions(group_id);
