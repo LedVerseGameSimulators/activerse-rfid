@@ -50,22 +50,73 @@ def test_solo_group_start_visit_then_validate_unchanged(client, db):
     assert "roster_player_ids" in out
 
 
-def test_solo_group_created_on_get_player_then_start_visit(client, db):
-    """Legacy player without solo group gets one when staff loads player detail."""
+def test_get_player_does_not_create_solo_group(client, db):
     pid = _make_player(db, "555-p303", "NoSoloYet", credit_minutes=60)
     assert db.get_solo_group_id(pid) is None
-    card = "CARD-P30301"
-    _bind_card(db, pid, card)
     detail = client.get(f"/players/{pid}")
     assert detail.status_code == 200
-    solo_gid = detail.json()["solo_group_id"]
+    assert detail.json()["solo_group_id"] is None
+    assert db.get_solo_group_id(pid) is None
+
+
+def test_ensure_solo_group_then_start_visit(client, db):
+    pid = _make_player(db, "555-p303b", "EnsureSolo", credit_minutes=60)
+    card = "CARD-P30302"
+    _bind_card(db, pid, card)
+    ens = client.post(f"/players/{pid}/ensure-solo-group")
+    assert ens.status_code == 200
+    solo_gid = ens.json()["solo_group_id"]
     assert solo_gid is not None
-    assert db.get_solo_group_id(pid) == solo_gid
+    resp = client.post(f"/groups/{solo_gid}/start-visit", json={"duration_min": 30})
+    assert resp.status_code == 200
+
+
+def test_start_visit_rejects_leader_without_card(client, db):
+    pid = _make_player(db, "555-p306", "NoCardLead", credit_minutes=60)
+    db.ensure_solo_group_for_player(pid)
+    solo_gid = db.get_solo_group_id(pid)
+    bal_before = db.get_credit_balance(pid)
+    sessions_before = db._execute(
+        "SELECT COUNT(*) AS c FROM player_sessions", fetch="one"
+    )["c"]
+    ledger_before = db._execute(
+        "SELECT COUNT(*) AS c FROM play_time_events", fetch="one"
+    )["c"]
+    resp = client.post(f"/groups/{solo_gid}/start-visit", json={"duration_min": 30})
+    assert resp.status_code == 400
+    assert "rfid card bound" in resp.json()["detail"].lower()
+    assert db.get_credit_balance(pid) == bal_before
+    assert db._execute(
+        "SELECT COUNT(*) AS c FROM player_sessions", fetch="one"
+    )["c"] == sessions_before
+    assert db._execute(
+        "SELECT COUNT(*) AS c FROM play_time_events", fetch="one"
+    )["c"] == ledger_before
+
+
+def test_start_visit_accepts_card_id_when_leader_unbound(client, db):
+    pid = _make_player(db, "555-p307", "PassCard", credit_minutes=60)
+    db.ensure_solo_group_for_player(pid)
+    solo_gid = db.get_solo_group_id(pid)
+    card = "CARD-P30701"
     resp = client.post(
         f"/groups/{solo_gid}/start-visit",
-        json={"duration_min": 30},
+        json={"duration_min": 30, "card_id": card},
     )
     assert resp.status_code == 200
+    assert resp.json()["card_id"] == card
+
+
+def test_start_visit_duration_max_enforced(client, db):
+    pid = _make_player(db, "555-p308", "MaxDur", credit_minutes=60)
+    db.ensure_solo_group_for_player(pid)
+    solo_gid = db.get_solo_group_id(pid)
+    _bind_card(db, pid, "CARD-P30801")
+    resp = client.post(
+        f"/groups/{solo_gid}/start-visit",
+        json={"duration_min": 721},
+    )
+    assert resp.status_code == 422
 
 
 def test_start_visit_rejects_archived_group(client, db):

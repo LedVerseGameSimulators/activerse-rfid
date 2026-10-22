@@ -1,5 +1,8 @@
 # Activerse RFID Server — Implementation Plan
 
+> **RETIRED (P3+):** Solo `POST /sessions` and reception **Issue Session** / `IssueSession.jsx`
+> are removed. Staff start floor play via **Start Visit** on a group (`POST /groups/{id}/start-visit`).
+
 **Repo:** `/Users/apple/activerse_final_changes/activerse-rfid`  
 **Original source:** `/Users/apple/parallel-work/ledplayserver_decompiled/`  
 **Original source (py):** `/Users/apple/parallel-work/ledplayserver_py_source/`  

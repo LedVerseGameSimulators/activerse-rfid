@@ -23,6 +23,32 @@ def _player_row_to_api(row: dict) -> dict:
     }
 
 
+def _groups_for_player_api(db: Database, player_id: int) -> list:
+    groups = db.list_groups_for_player(player_id, include_archived=False)
+    out = []
+    for g in groups:
+        lid = g.get("leader_player_id")
+        leader_name = None
+        leader_has_card = False
+        if lid:
+            lrows = db.search_custom_tb_by_id(lid)
+            if lrows:
+                leader_name = lrows[0]["name"]
+                card = (lrows[0].get("card_id") or "").strip()
+                leader_has_card = len(card) > 5
+        out.append({
+            "id": g["id"],
+            "name": g["name"],
+            "kind": g.get("kind") or "team",
+            "company_name": g.get("company_name"),
+            "archived_at": g.get("archived_at"),
+            "leader_player_id": lid,
+            "leader_name": leader_name,
+            "leader_has_card": leader_has_card,
+        })
+    return out
+
+
 def _apply_org_badges(db: Database, players_api: list) -> list:
     org_map = db.get_company_group_map([p["id"] for p in players_api])
     for p in players_api:
@@ -57,22 +83,18 @@ def get_player(db: Database, player_id: int):
     player["sessions"] = sessions
     player["scores"] = [dict(s) for s in scores] if scores else []
     player["recharge_history"] = db.search_recharge_tb_by_id(player_id)
-    solo_gid = db.get_solo_group_id(player_id)
-    if solo_gid is None:
-        db.ensure_solo_group_for_player(player_id)
-        solo_gid = db.get_solo_group_id(player_id)
-    player["solo_group_id"] = solo_gid
-    player["groups"] = [
-        {
-            "id": g["id"],
-            "name": g["name"],
-            "kind": g.get("kind") or "team",
-            "company_name": g.get("company_name"),
-            "archived_at": g.get("archived_at"),
-        }
-        for g in db.list_groups_for_player(player_id, include_archived=False)
-    ]
+    player["solo_group_id"] = db.get_solo_group_id(player_id)
+    player["groups"] = _groups_for_player_api(db, player_id)
     return player
+
+
+def ensure_solo_group(db: Database, player_id: int):
+    rows = db.search_custom_tb_by_id(player_id)
+    if not rows:
+        raise HTTPException(404, "Player not found")
+    db.ensure_solo_group_for_player(player_id)
+    solo_gid = db.get_solo_group_id(player_id)
+    return {"solo_group_id": solo_gid, "success": True}
 
 
 def register_player(db: Database, name: str, phone: str, email=None, age=None,

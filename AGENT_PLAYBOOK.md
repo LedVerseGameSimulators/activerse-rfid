@@ -1,5 +1,8 @@
 # Activerse RFID Server — Agent Playbook
 
+> **RETIRED (P3+):** Do not use `POST /sessions` or **Issue Session** UI — use **Start Visit**
+> on a group (`POST /groups/{id}/start-visit`). `POST /sessions` returns **410 Gone**.
+
 **Repo:** `/Users/apple/activerse_final_changes/activerse-rfid/`  
 **Source (original Windows app, fully decompiled):** `/Users/apple/parallel-work/ledplayserver_decompiled/`  
 **Original full UI tree:** `/Users/apple/parallel-work/ledplayserver_py_source/ui/`  

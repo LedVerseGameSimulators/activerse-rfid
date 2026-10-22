@@ -261,7 +261,8 @@ class Database:
                         leader_player_id  INTEGER,
                         created_at        TEXT,
                         archived_at       TEXT,
-                        kind              TEXT DEFAULT 'team',
+                        kind                  TEXT DEFAULT 'team',
+                        solo_owner_player_id  INTEGER,
                         UNIQUE(company_id, name)
                     );
 
@@ -342,7 +343,11 @@ class Database:
                 self._migrate_groups_nullable_company(con)
                 # Rebuild group_members for multi-group membership (drop UNIQUE(player_id)).
                 self._migrate_group_members_multi_group(con)
-                for _col, _typ in (("archived_at", "TEXT"), ("kind", "TEXT DEFAULT 'team'")):
+                for _col, _typ in (
+                    ("archived_at", "TEXT"),
+                    ("kind", "TEXT DEFAULT 'team'"),
+                    ("solo_owner_player_id", "INTEGER"),
+                ):
                     try:
                         con.execute(f"ALTER TABLE groups ADD COLUMN {_col} {_typ}")
                     except sqlite3.OperationalError:
@@ -353,6 +358,7 @@ class Database:
                     )
                 except sqlite3.OperationalError:
                     pass
+                self._migrate_solo_group_owner(con)
                 # Corporate group affiliation before walk-in backfill (P2).
                 con.execute(
                     "INSERT OR IGNORE INTO company_members (company_id, player_id, joined_at) "
@@ -537,6 +543,76 @@ class Database:
             ALTER TABLE group_members_v2 RENAME TO group_members;
         """)
 
+    def _migrate_solo_group_owner(self, con):
+        """One active solo group per player: solo_owner_player_id + partial unique index."""
+        try:
+            con.execute("ALTER TABLE groups ADD COLUMN solo_owner_player_id INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        now = self._now_iso()
+        dup_leaders = con.execute(
+            "SELECT leader_player_id FROM groups "
+            "WHERE kind = 'solo' AND archived_at IS NULL AND leader_player_id IS NOT NULL "
+            "GROUP BY leader_player_id HAVING COUNT(*) > 1"
+        ).fetchall()
+        for row in dup_leaders:
+            pid = int(row["leader_player_id"])
+            group_rows = con.execute(
+                "SELECT id FROM groups WHERE kind = 'solo' AND leader_player_id = ? "
+                "AND archived_at IS NULL ORDER BY created_at ASC, id ASC",
+                (pid,),
+            ).fetchall()
+            for extra in group_rows[1:]:
+                con.execute(
+                    "UPDATE groups SET archived_at = ? WHERE id = ?",
+                    (now, int(extra["id"])),
+                )
+        solos = con.execute(
+            "SELECT id, leader_player_id FROM groups WHERE kind = 'solo'"
+        ).fetchall()
+        for g in solos:
+            gid = int(g["id"])
+            owner = g["leader_player_id"]
+            if not owner:
+                mem = con.execute(
+                    "SELECT player_id FROM group_members WHERE group_id = ? LIMIT 1",
+                    (gid,),
+                ).fetchone()
+                if mem:
+                    owner = mem["player_id"]
+            if owner and not con.execute(
+                "SELECT solo_owner_player_id FROM groups WHERE id = ?", (gid,)
+            ).fetchone()["solo_owner_player_id"]:
+                con.execute(
+                    "UPDATE groups SET solo_owner_player_id = ? WHERE id = ?",
+                    (int(owner), gid),
+                )
+        dup_owners = con.execute(
+            "SELECT solo_owner_player_id FROM groups "
+            "WHERE kind = 'solo' AND solo_owner_player_id IS NOT NULL "
+            "AND archived_at IS NULL "
+            "GROUP BY solo_owner_player_id HAVING COUNT(*) > 1"
+        ).fetchall()
+        for row in dup_owners:
+            pid = int(row["solo_owner_player_id"])
+            group_rows = con.execute(
+                "SELECT id FROM groups WHERE kind = 'solo' "
+                "AND solo_owner_player_id = ? AND archived_at IS NULL "
+                "ORDER BY created_at ASC, id ASC",
+                (pid,),
+            ).fetchall()
+            for extra in group_rows[1:]:
+                con.execute(
+                    "UPDATE groups SET archived_at = ? WHERE id = ?",
+                    (now, int(extra["id"])),
+                )
+        con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_solo_owner_unique "
+            "ON groups(solo_owner_player_id) "
+            "WHERE kind = 'solo' AND solo_owner_player_id IS NOT NULL "
+            "AND archived_at IS NULL"
+        )
+
     def _bootstrap_p2_org(self, con):
         """Walk-in company setting + backfill company/solo groups (idempotent)."""
         walk_id = self._ensure_walk_in_company_row(con)
@@ -608,9 +684,9 @@ class Database:
         ).fetchone():
             solo_name = f"{base_name} ({player_id})"
         cur = con.execute(
-            "INSERT INTO groups (company_id, name, leader_player_id, created_at, kind) "
-            "VALUES (?, ?, ?, ?, 'solo')",
-            (company_id, solo_name, player_id, self._now_iso()),
+            "INSERT INTO groups (company_id, name, leader_player_id, created_at, kind, "
+            "solo_owner_player_id) VALUES (?, ?, ?, ?, 'solo', ?)",
+            (company_id, solo_name, player_id, self._now_iso(), player_id),
         )
         gid = int(cur.lastrowid)
         con.execute(
@@ -1197,6 +1273,15 @@ class Database:
                         ).fetchone()
                         if card_conflict and card_conflict["custom_id"] != leader_id:
                             failures.append("Card already bound to another player")
+
+                bound_card = ""
+                if leader_bal_row:
+                    bound_card = (leader_bal_row["card_id"] or "").strip()
+                effective_card = (card_id or "").strip() if card_id else bound_card
+                if not effective_card or len(effective_card) <= 5:
+                    failures.append(
+                        "Leader has no RFID card bound; bind a card or pass card_id."
+                    )
 
                 if failures:
                     raise ValueError("; ".join(failures))

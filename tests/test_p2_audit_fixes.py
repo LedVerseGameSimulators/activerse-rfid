@@ -34,6 +34,7 @@ def test_start_visit_api_rejects_archived_group(db):
     assert "archived" in str(exc.value).lower()
     db.unarchive_group(group["id"])
     db.set_group_leader(group["id"], leader)
+    _bind_card(db, leader, "ARCHAPI002")
     out = groups.start_visit(db, group["id"], 30)
     assert out["session_id"]
 

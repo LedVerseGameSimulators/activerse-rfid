@@ -137,8 +137,9 @@ def start_visit(db: Database, group_id: int, duration_min: int, card_id: Optiona
         raise HTTPException(404, "Group not found")
     if row.get("archived_at"):
         raise HTTPException(400, "Group is archived; unarchive it first.")
+    kind = row.get("kind") or "team"
     leader_id = row.get("leader_player_id")
-    if leader_id:
+    if leader_id and kind == "solo":
         db.ensure_solo_group_for_player(leader_id)
     try:
         result = db.issue_group_visit_atomic(

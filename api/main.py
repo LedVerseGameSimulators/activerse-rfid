@@ -164,6 +164,11 @@ async def topup_player(player_id: int, body: TopUpRequest):
     return players.topup_player(get_db(), player_id, body.minutes, body.amount_money or 0)
 
 
+@app.post("/players/{player_id}/ensure-solo-group")
+async def ensure_player_solo_group(player_id: int):
+    return players.ensure_solo_group(get_db(), player_id)
+
+
 # ── Sessions ──────────────────────────────────────────────────────────────
 
 @app.post("/sessions")

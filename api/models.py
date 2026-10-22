@@ -98,7 +98,7 @@ class GroupLeaderSet(BaseModel):
 
 
 class StartVisitRequest(BaseModel):
-    duration_min: int = Field(default=60, ge=1)
+    duration_min: int = Field(default=60, ge=1, le=720)
     card_id: Optional[str] = None
 
 

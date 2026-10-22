@@ -76,6 +76,7 @@ def test_issue_group_visit_atomic_walk_in_group_has_no_company(db):
     leader_id = _make_player(db, "555-2004", "Leader", credit_minutes=60)
     db.add_group_member_atomic(group["id"], leader_id)
     db.set_group_leader(group["id"], leader_id)
+    db.update_custom_value(leader_id, "card_id", "CARDWALK2004")
 
     result = db.issue_group_visit_atomic(group["id"], 30)
 

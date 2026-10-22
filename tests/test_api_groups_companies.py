@@ -102,6 +102,7 @@ def test_start_visit_walk_in_group(db):
     leader_id = _make_player(db, "555-5007", "Leader", credit_minutes=60)
     groups.add_member(db, group["id"], player_id=leader_id)
     groups.set_leader(db, group["id"], leader_id)
+    db.update_custom_value(leader_id, "card_id", "CARDWALK5007")
 
     result = groups.start_visit(db, group["id"], 30)
     assert result["company_id"] is None
