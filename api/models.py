@@ -44,6 +44,8 @@ class SessionAdjust(BaseModel):
     delta_min: int
     reason: str = ""
     adjusted_by: str = ""
+    adjustment_mode: str = "free_clock"
+    balance_delta_min: Optional[float] = None
 
 
 class ValidateResponse(BaseModel):

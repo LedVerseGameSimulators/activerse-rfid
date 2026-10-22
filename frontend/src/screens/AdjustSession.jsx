@@ -4,14 +4,23 @@ import { api } from '../api'
 export default function AdjustSession({ session, onDone, onCancel }) {
   const [delta, setDelta] = useState(30)
   const [reason, setReason] = useState('')
+  const [mode, setMode] = useState('free_clock')
   const [loading, setLoading] = useState(false)
 
   const submit = async () => {
     setLoading(true)
     try {
+      const body = {
+        delta_min: delta,
+        reason,
+        adjustment_mode: mode,
+      }
+      if (mode === 'balance_tied') {
+        body.balance_delta_min = delta
+      }
       await api(`/sessions/${session.id}/adjust`, {
         method: 'POST',
-        body: JSON.stringify({ delta_min: delta, reason }),
+        body: JSON.stringify(body),
       })
       onDone()
     } catch (e) {
@@ -28,6 +37,21 @@ export default function AdjustSession({ session, onDone, onCancel }) {
         <p style={{ color: '#9aa0a6', marginBottom: '1rem' }}>
           Current: {session.minutes_remaining} min remaining
         </p>
+        <label style={label}>Adjustment type</label>
+        <select
+          style={input}
+          value={mode}
+          onChange={e => setMode(e.target.value)}
+        >
+          <option value="free_clock">Free clock (no wallet change)</option>
+          <option value="balance_tied">Balance-tied (payer wallet)</option>
+        </select>
+        {mode === 'balance_tied' && (
+          <p style={{ color: '#f0ad4e', fontSize: 13, marginTop: 8 }}>
+            Positive minutes extend the visit and deduct from the payer&apos;s credit balance;
+            negative values shrink the visit and return minutes to the payer.
+          </p>
+        )}
         <label style={label}>Add/subtract minutes (negative to reduce)</label>
         <input style={input} type="number" value={delta} onChange={e => setDelta(+e.target.value)} />
         <label style={label}>Reason</label>

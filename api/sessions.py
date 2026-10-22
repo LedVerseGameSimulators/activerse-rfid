@@ -3,6 +3,7 @@ Session issue/adjust/close/validate — clock-based expiry_at model.
 Team roster: members on an open session share score credit (total/N).
 """
 from datetime import datetime
+from typing import Optional
 
 from fastapi import HTTPException
 
@@ -30,9 +31,8 @@ def _roster_payload(db: Database, session_id: int):
 
 def issue_session(db: Database, player_id: int, duration_min: int = DEFAULT_SESSION_MINUTES,
                   notes: str = ""):
-    """Deducts the full session duration from credit_balance up front, no
-    refund on early close or unused expiry (matches the existing clock-based
-    player_sessions model exactly). Seeds payer onto session_roster."""
+    """Deducts the full session duration from credit_balance up front; early close
+    refunds unused clock minutes to the payer (P1). Seeds payer onto session_roster."""
     rows = db.search_custom_tb_by_id(player_id)
     if not rows:
         raise HTTPException(404, "Player not found")
@@ -115,26 +115,55 @@ def remove_roster_member(db: Database, session_id: int, player_id: int):
     return {"success": True, "session_id": session_id, "roster": _roster_payload(db, session_id)}
 
 
-def adjust_session(db: Database, session_id: int, delta_min: int, reason: str = "",
-                   adjusted_by: str = ""):
+def adjust_session(
+    db: Database,
+    session_id: int,
+    delta_min: int,
+    reason: str = "",
+    adjusted_by: str = "",
+    adjustment_mode: str = "free_clock",
+    balance_delta_min: Optional[float] = None,
+):
     session = db.get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
     if session.get("closed_at"):
         raise HTTPException(400, "Session already closed")
-    new_expiry = db.adjust_session(session_id, delta_min, reason, adjusted_by)
+    try:
+        new_expiry = db.adjust_session(
+            session_id,
+            delta_min,
+            reason,
+            adjusted_by,
+            adjustment_mode=adjustment_mode,
+            balance_delta_min=balance_delta_min,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if new_expiry is None:
+        raise HTTPException(404, "Session not found")
+    payer_id = session.get("player_id")
+    balance_after = db.get_credit_balance(payer_id) if payer_id else None
     return {
         "session_id": session_id,
         "expiry_at": new_expiry,
         "minutes_remaining": _minutes_remaining(new_expiry),
+        "adjustment_mode": adjustment_mode,
+        "credit_balance_after": balance_after,
     }
 
 
 def close_session(db: Database, session_id: int):
-    rows = db.close_session(session_id)
-    if rows == 0:
-        raise HTTPException(404, "Session not found or already closed")
-    return {"success": True, "session_id": session_id}
+    result = db.close_session(session_id)
+    if not result["closed"] and result["payer_player_id"] is None:
+        raise HTTPException(404, "Session not found")
+    return {
+        "success": True,
+        "session_id": session_id,
+        "refunded_minutes": result["refunded_minutes"],
+        "payer_player_id": result["payer_player_id"],
+        "credit_balance_after": result["credit_balance_after"],
+    }
 
 
 def validate_card(db: Database, card_id: str):

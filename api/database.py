@@ -148,6 +148,22 @@ class Database:
                         adjusted_by TEXT
                     );
 
+                    CREATE TABLE IF NOT EXISTS play_time_events (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        player_id   INTEGER NOT NULL,
+                        session_id  INTEGER,
+                        group_id    INTEGER,
+                        company_id  INTEGER,
+                        minutes     REAL NOT NULL,
+                        source      TEXT NOT NULL,
+                        earned_at   TEXT NOT NULL,
+                        notes       TEXT DEFAULT ''
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_play_time_player
+                        ON play_time_events(player_id, earned_at);
+                    CREATE INDEX IF NOT EXISTS idx_play_time_session
+                        ON play_time_events(session_id);
+
                     CREATE TABLE IF NOT EXISTS session_roster (
                         id          INTEGER PRIMARY KEY AUTOINCREMENT,
                         session_id  INTEGER NOT NULL,
@@ -305,6 +321,16 @@ class Database:
                                 ("credit_balance", "REAL DEFAULT 0")):
                     try:
                         con.execute(f"ALTER TABLE custom_info ADD COLUMN {col} {typ}")
+                    except sqlite3.OperationalError:
+                        pass
+                for _col, _typ in (
+                    ("adjustment_mode", "TEXT DEFAULT 'free_clock'"),
+                    ("balance_delta_min", "REAL DEFAULT 0"),
+                ):
+                    try:
+                        con.execute(
+                            f"ALTER TABLE session_adjustments ADD COLUMN {_col} {_typ}"
+                        )
                     except sqlite3.OperationalError:
                         pass
                 # Rebuild central_scores unique key so team split shares
@@ -624,6 +650,68 @@ class Database:
 
     # ── New session/score methods ─────────────────────────────────────────
 
+    @staticmethod
+    def _minutes_remaining_clock(expiry_at: str) -> float:
+        expiry = datetime.strptime(expiry_at, "%Y-%m-%d %H:%M:%S")
+        delta = (expiry - datetime.now()).total_seconds() / 60
+        return max(0.0, round(delta, 1))
+
+    def _append_play_time_event(
+        self,
+        con,
+        player_id: int,
+        minutes: float,
+        source: str,
+        session_id: Optional[int] = None,
+        group_id: Optional[int] = None,
+        company_id: Optional[int] = None,
+        notes: str = "",
+    ):
+        con.execute(
+            "INSERT INTO play_time_events "
+            "(player_id, session_id, group_id, company_id, minutes, source, earned_at, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                player_id,
+                session_id,
+                group_id,
+                company_id,
+                minutes,
+                source,
+                self._now_iso(),
+                notes or "",
+            ),
+        )
+
+    def append_play_time_event(
+        self,
+        player_id: int,
+        minutes: float,
+        source: str,
+        session_id: Optional[int] = None,
+        group_id: Optional[int] = None,
+        company_id: Optional[int] = None,
+        notes: str = "",
+    ):
+        with self._lock:
+            con = self._conn()
+            try:
+                self._append_play_time_event(
+                    con, player_id, minutes, source, session_id, group_id, company_id, notes
+                )
+                con.commit()
+            finally:
+                con.close()
+
+    def _group_has_open_visit(self, con, group_id: int) -> bool:
+        now = self._now_iso()
+        row = con.execute(
+            "SELECT 1 FROM player_sessions WHERE group_id = ? AND closed_at IS NULL "
+            "AND expiry_at > ? LIMIT 1",
+            (group_id, now),
+        ).fetchone()
+        return row is not None
+
     def create_session(self, player_id: int, card_id: str, duration_min: int, notes: str = ""):
         now = self._now_iso()
         from datetime import timedelta
@@ -730,6 +818,15 @@ class Database:
                         "UPDATE player_sessions SET company_id = ? WHERE id = ?",
                         (stamp_company_id, sid),
                     )
+                self._append_play_time_event(
+                    con,
+                    player_id,
+                    float(duration_min),
+                    "visit_start",
+                    session_id=sid,
+                    group_id=None,
+                    company_id=stamp_company_id,
+                )
                 con.commit()
                 return sid, now, expiry, balance - duration_min
             except Exception:
@@ -871,6 +968,15 @@ class Database:
                         "INSERT OR IGNORE INTO session_roster (session_id, player_id) VALUES (?, ?)",
                         (sid, pid),
                     )
+                self._append_play_time_event(
+                    con,
+                    leader_id,
+                    float(duration_min),
+                    "visit_start",
+                    session_id=sid,
+                    group_id=group_id,
+                    company_id=group["company_id"],
+                )
                 con.commit()
                 return {
                     "session_id": sid,
@@ -942,10 +1048,22 @@ class Database:
                         f"Close it before adding them to a team."
                     )
 
-                con.execute(
+                cur = con.execute(
                     "INSERT OR IGNORE INTO session_roster (session_id, player_id) VALUES (?, ?)",
                     (session_id, player_id),
                 )
+                if cur.rowcount > 0:
+                    remaining = self._minutes_remaining_clock(session["expiry_at"])
+                    if remaining > 0:
+                        self._append_play_time_event(
+                            con,
+                            player_id,
+                            remaining,
+                            "roster_join",
+                            session_id=session_id,
+                            group_id=session["group_id"],
+                            company_id=session["company_id"],
+                        )
                 con.commit()
             except Exception:
                 con.rollback()
@@ -997,30 +1115,148 @@ class Database:
             )
         )
 
-    def adjust_session(self, session_id: int, delta_min: int, reason: str, adjusted_by: str = ""):
-        session = self.get_session(session_id)
-        if not session:
-            return None
-        from datetime import datetime, timedelta
-        expiry = datetime.strptime(session["expiry_at"], "%Y-%m-%d %H:%M:%S")
-        new_expiry = expiry + timedelta(minutes=delta_min)
-        new_expiry_str = new_expiry.strftime("%Y-%m-%d %H:%M:%S")
-        self._execute(
-            "UPDATE player_sessions SET expiry_at = ? WHERE id = ?",
-            (new_expiry_str, session_id),
-        )
-        self._execute(
-            "INSERT INTO session_adjustments (session_id, delta_min, reason, adjusted_at, adjusted_by) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, delta_min, reason, self._now_iso(), adjusted_by),
-        )
-        return new_expiry_str
+    def adjust_session(
+        self,
+        session_id: int,
+        delta_min: int,
+        reason: str,
+        adjusted_by: str = "",
+        adjustment_mode: str = "free_clock",
+        balance_delta_min: Optional[float] = None,
+    ):
+        from datetime import timedelta
+
+        mode = adjustment_mode if adjustment_mode in ("free_clock", "balance_tied") else "free_clock"
+        bal_delta = float(balance_delta_min if balance_delta_min is not None else delta_min)
+
+        with self._lock:
+            con = self._conn()
+            try:
+                session = con.execute(
+                    "SELECT * FROM player_sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not session:
+                    return None
+                if session["closed_at"]:
+                    raise ValueError("Session already closed")
+
+                expiry = datetime.strptime(session["expiry_at"], "%Y-%m-%d %H:%M:%S")
+                new_expiry = expiry + timedelta(minutes=delta_min)
+                new_expiry_str = new_expiry.strftime("%Y-%m-%d %H:%M:%S")
+                payer_id = session["player_id"]
+
+                if mode == "balance_tied" and bal_delta != 0:
+                    con.execute(
+                        "UPDATE custom_info SET credit_balance = COALESCE(credit_balance, 0) - ? "
+                        "WHERE custom_id = ?",
+                        (bal_delta, payer_id),
+                    )
+                    self._append_play_time_event(
+                        con,
+                        payer_id,
+                        bal_delta,
+                        "adjust",
+                        session_id=session_id,
+                        group_id=session["group_id"],
+                        company_id=session["company_id"],
+                        notes=reason or "",
+                    )
+
+                con.execute(
+                    "UPDATE player_sessions SET expiry_at = ? WHERE id = ?",
+                    (new_expiry_str, session_id),
+                )
+                con.execute(
+                    "INSERT INTO session_adjustments "
+                    "(session_id, delta_min, reason, adjusted_at, adjusted_by, "
+                    "adjustment_mode, balance_delta_min) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        session_id,
+                        delta_min,
+                        reason,
+                        self._now_iso(),
+                        adjusted_by,
+                        mode,
+                        bal_delta if mode == "balance_tied" else 0,
+                    ),
+                )
+                con.commit()
+                return new_expiry_str
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
 
     def close_session(self, session_id: int):
-        return self._rowcount(
-            "UPDATE player_sessions SET closed_at = ? WHERE id = ? AND closed_at IS NULL",
-            (self._now_iso(), session_id),
-        )
+        """Close visit; refund unused clock minutes to payer only (idempotent)."""
+        with self._lock:
+            con = self._conn()
+            try:
+                session = con.execute(
+                    "SELECT * FROM player_sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if not session:
+                    return {
+                        "closed": False,
+                        "refunded_minutes": 0.0,
+                        "payer_player_id": None,
+                        "credit_balance_after": None,
+                    }
+                payer_id = session["player_id"]
+                if session["closed_at"]:
+                    bal = con.execute(
+                        "SELECT credit_balance FROM custom_info WHERE custom_id = ?",
+                        (payer_id,),
+                    ).fetchone()
+                    balance_after = float(bal["credit_balance"] or 0) if bal else 0.0
+                    return {
+                        "closed": True,
+                        "refunded_minutes": 0.0,
+                        "payer_player_id": payer_id,
+                        "credit_balance_after": balance_after,
+                    }
+
+                refunded = self._minutes_remaining_clock(session["expiry_at"])
+                if refunded > 0:
+                    con.execute(
+                        "UPDATE custom_info SET credit_balance = COALESCE(credit_balance, 0) + ? "
+                        "WHERE custom_id = ?",
+                        (refunded, payer_id),
+                    )
+                    self._append_play_time_event(
+                        con,
+                        payer_id,
+                        refunded,
+                        "refund",
+                        session_id=session_id,
+                        group_id=session["group_id"],
+                        company_id=session["company_id"],
+                    )
+
+                now = self._now_iso()
+                con.execute(
+                    "UPDATE player_sessions SET closed_at = ? WHERE id = ? AND closed_at IS NULL",
+                    (now, session_id),
+                )
+                bal = con.execute(
+                    "SELECT credit_balance FROM custom_info WHERE custom_id = ?",
+                    (payer_id,),
+                ).fetchone()
+                balance_after = float(bal["credit_balance"] or 0) if bal else 0.0
+                con.commit()
+                return {
+                    "closed": True,
+                    "refunded_minutes": refunded,
+                    "payer_player_id": payer_id,
+                    "credit_balance_after": balance_after,
+                }
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
 
     def get_sessions_for_player(self, player_id: int):
         rows = self._execute(
@@ -1603,6 +1839,19 @@ class Database:
             return None
         new_name = name.strip() if name is not None else row["name"]
         new_leader = leader_player_id if leader_player_id is not None else row.get("leader_player_id")
+        if (
+            leader_player_id is not None
+            and leader_player_id != row.get("leader_player_id")
+        ):
+            with self._lock:
+                con = self._conn()
+                try:
+                    if self._group_has_open_visit(con, group_id):
+                        raise ValueError(
+                            "Cannot change group leader while a visit is open; close the visit first."
+                        )
+                finally:
+                    con.close()
         self._execute(
             "UPDATE groups SET name = ?, leader_player_id = ? WHERE id = ?",
             (new_name, new_leader, group_id),
@@ -1766,6 +2015,15 @@ class Database:
         )
 
     def set_group_leader(self, group_id: int, player_id: int):
+        with self._lock:
+            con = self._conn()
+            try:
+                if self._group_has_open_visit(con, group_id):
+                    raise ValueError(
+                        "Cannot change group leader while a visit is open; close the visit first."
+                    )
+            finally:
+                con.close()
         self.add_group_member_atomic(group_id, player_id)
         self._execute(
             "UPDATE groups SET leader_player_id = ? WHERE id = ?",

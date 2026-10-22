@@ -184,7 +184,13 @@ async def get_session(session_id: int):
 @app.post("/sessions/{session_id}/adjust")
 async def adjust_session(session_id: int, body: SessionAdjust):
     return sessions.adjust_session(
-        get_db(), session_id, body.delta_min, body.reason, body.adjusted_by
+        get_db(),
+        session_id,
+        body.delta_min,
+        body.reason,
+        body.adjusted_by,
+        adjustment_mode=body.adjustment_mode,
+        balance_delta_min=body.balance_delta_min,
     )
 
 

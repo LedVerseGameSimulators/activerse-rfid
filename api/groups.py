@@ -99,7 +99,10 @@ def set_leader(db: Database, group_id: int, player_id: int):
         raise HTTPException(404, "Group not found")
     if not db.search_custom_tb_by_id(player_id):
         raise HTTPException(404, "Player not found")
-    db.set_group_leader(group_id, player_id)
+    try:
+        db.set_group_leader(group_id, player_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return _group_detail(db, group_id)
 
 

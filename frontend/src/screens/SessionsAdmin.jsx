@@ -20,7 +20,14 @@ export default function SessionsAdmin() {
   const close = async (session) => {
     if (!confirm(`Close session #${session.id} for ${session.player_name}?`)) return
     try {
-      await api(`/sessions/${session.id}/close`, { method: 'POST' })
+      const res = await api(`/sessions/${session.id}/close`, { method: 'POST' })
+      const refunded = res.refunded_minutes ?? 0
+      if (refunded > 0) {
+        alert(
+          `Session closed. Refunded ${refunded} min to payer ` +
+          `(balance now ${res.credit_balance_after ?? '—'} min).`
+        )
+      }
       load()
     } catch (e) {
       alert(e.message)
