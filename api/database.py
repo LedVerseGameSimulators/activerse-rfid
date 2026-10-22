@@ -656,6 +656,31 @@ class Database:
         delta = (expiry - datetime.now()).total_seconds() / 60
         return max(0.0, round(delta, 1))
 
+    @staticmethod
+    def _elapsed_minutes_since(issued_at: str, cap_at: float) -> float:
+        issued = datetime.strptime(issued_at, "%Y-%m-%d %H:%M:%S")
+        elapsed = (datetime.now() - issued).total_seconds() / 60
+        elapsed = max(0.0, round(elapsed, 1))
+        return min(elapsed, max(0.0, cap_at))
+
+    def _session_paid_total(self, con, session_id: int, duration_min: float) -> float:
+        """Wallet minutes charged for this visit (free_clock extensions excluded)."""
+        row = con.execute(
+            "SELECT COALESCE(SUM(balance_delta_min), 0) AS tied_sum "
+            "FROM session_adjustments WHERE session_id = ? AND adjustment_mode = 'balance_tied'",
+            (session_id,),
+        ).fetchone()
+        tied_sum = float(row["tied_sum"] or 0) if row else 0.0
+        return max(0.0, float(duration_min or 0) + tied_sum)
+
+    def _compute_refund_minutes(self, con, session) -> float:
+        """Refund capped so payer never receives more than unused prepaid minutes."""
+        paid_total = self._session_paid_total(con, session["id"], session["duration_min"])
+        elapsed = self._elapsed_minutes_since(session["issued_at"], paid_total)
+        prepaid_remaining = max(0.0, paid_total - elapsed)
+        remaining_clock = self._minutes_remaining_clock(session["expiry_at"])
+        return max(0.0, min(remaining_clock, prepaid_remaining))
+
     def _append_play_time_event(
         self,
         con,
@@ -704,11 +729,10 @@ class Database:
                 con.close()
 
     def _group_has_open_visit(self, con, group_id: int) -> bool:
-        now = self._now_iso()
         row = con.execute(
             "SELECT 1 FROM player_sessions WHERE group_id = ? AND closed_at IS NULL "
-            "AND expiry_at > ? LIMIT 1",
-            (group_id, now),
+            "LIMIT 1",
+            (group_id,),
         ).fetchone()
         return row is not None
 
@@ -1053,17 +1077,23 @@ class Database:
                     (session_id, player_id),
                 )
                 if cur.rowcount > 0:
-                    remaining = self._minutes_remaining_clock(session["expiry_at"])
-                    if remaining > 0:
-                        self._append_play_time_event(
-                            con,
-                            player_id,
-                            remaining,
-                            "roster_join",
-                            session_id=session_id,
-                            group_id=session["group_id"],
-                            company_id=session["company_id"],
-                        )
+                    already_credited = con.execute(
+                        "SELECT 1 FROM play_time_events WHERE session_id = ? AND player_id = ? "
+                        "AND source = 'roster_join' LIMIT 1",
+                        (session_id, player_id),
+                    ).fetchone()
+                    if not already_credited:
+                        remaining = self._minutes_remaining_clock(session["expiry_at"])
+                        if remaining > 0:
+                            self._append_play_time_event(
+                                con,
+                                player_id,
+                                remaining,
+                                "roster_join",
+                                session_id=session_id,
+                                group_id=session["group_id"],
+                                company_id=session["company_id"],
+                            )
                 con.commit()
             except Exception:
                 con.rollback()
@@ -1143,9 +1173,23 @@ class Database:
                 expiry = datetime.strptime(session["expiry_at"], "%Y-%m-%d %H:%M:%S")
                 new_expiry = expiry + timedelta(minutes=delta_min)
                 new_expiry_str = new_expiry.strftime("%Y-%m-%d %H:%M:%S")
+                if new_expiry <= datetime.now():
+                    raise ValueError(
+                        "Adjustment would end the visit now or in the past; close the session instead."
+                    )
                 payer_id = session["player_id"]
 
                 if mode == "balance_tied" and bal_delta != 0:
+                    bal_row = con.execute(
+                        "SELECT credit_balance FROM custom_info WHERE custom_id = ?",
+                        (payer_id,),
+                    ).fetchone()
+                    balance = float(bal_row["credit_balance"] or 0) if bal_row else 0.0
+                    if bal_delta > 0 and balance < bal_delta:
+                        raise ValueError(
+                            f"Insufficient credit balance for this adjustment: has {balance:.1f} min, "
+                            f"needs {bal_delta:.1f} min. Top up the payer first."
+                        )
                     con.execute(
                         "UPDATE custom_info SET credit_balance = COALESCE(credit_balance, 0) - ? "
                         "WHERE custom_id = ?",
@@ -1218,7 +1262,7 @@ class Database:
                         "credit_balance_after": balance_after,
                     }
 
-                refunded = self._minutes_remaining_clock(session["expiry_at"])
+                refunded = self._compute_refund_minutes(con, session)
                 if refunded > 0:
                     con.execute(
                         "UPDATE custom_info SET credit_balance = COALESCE(credit_balance, 0) + ? "
