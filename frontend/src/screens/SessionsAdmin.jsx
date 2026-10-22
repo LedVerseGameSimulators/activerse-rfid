@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import AdjustSession from './AdjustSession'
 
@@ -65,6 +66,7 @@ export default function SessionsAdmin() {
                 <td style={td}>{s.expiry_at}</td>
                 <td style={{ ...td, fontWeight: 600 }}>{s.minutes_remaining}</td>
                 <td style={td}>
+                  <Link to={`/stats/session/${s.id}`} style={{ ...btnSm, textDecoration: 'none', marginRight: 6 }}>Stats</Link>
                   <button style={btnSm} onClick={() => setAdjusting(s)}>Adjust</button>
                   <button style={{ ...btnSm, background: '#ff6b6b', marginLeft: 6 }} onClick={() => close(s)}>Close</button>
                 </td>

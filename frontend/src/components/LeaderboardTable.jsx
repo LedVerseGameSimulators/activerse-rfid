@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { formatPlayMode } from '../leaderboardQuery'
 
 export default function LeaderboardTable({ rows, board = 'individual', emptyMessage }) {
@@ -23,9 +24,16 @@ export default function LeaderboardTable({ rows, board = 'individual', emptyMess
       <tbody>
         {rows.map((r, i) => {
           const rank = r.rank ?? i + 1
-          const name = board === 'team'
+          const plainName = board === 'team'
             ? (r.group_name || r.player_name || r.card_id || 'Team')
             : (r.player_name || r.card_id || `#${r.player_id || '?'}`)
+          const name = board === 'team'
+            ? (r.group_id
+              ? <Link to={`/stats/group/${r.group_id}`} style={{ color: '#74c0fc', textDecoration: 'none' }}>{plainName}</Link>
+              : plainName)
+            : (r.player_id
+              ? <Link to={`/stats/player/${r.player_id}`} style={{ color: '#74c0fc', textDecoration: 'none' }}>{plainName}</Link>
+              : plainName)
           const size = r.roster_size_at_play ?? r.member_count
           const mode = formatPlayMode(r.play_mode) || '—'
           return (

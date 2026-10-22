@@ -155,7 +155,14 @@ export default function GroupDetail() {
           <> · <Link to={`/companies/${group.company_id}`} style={{ color: '#74c0fc' }}>{group.company_name}</Link></>
         )}
       </p>
-      <h1 style={{ marginBottom: '0.25rem' }}>{group?.name}</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: '0.25rem' }}>
+        <h1 style={{ margin: 0 }}>{group?.name}</h1>
+        {group?.id && (
+          <Link to={`/stats/group/${group.id}`} style={{ ...btn, background: '#495057', textDecoration: 'none' }}>
+            Stats
+          </Link>
+        )}
+      </div>
       <p style={{ color: '#9aa0a6', marginBottom: '1rem' }}>
         {group?.company_name}
         {group?.kind === 'solo' && ' · Solo group'}

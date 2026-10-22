@@ -95,7 +95,14 @@ export default function CompanyDetail() {
   return (
     <div>
       <p><Link to="/companies" style={{ color: '#74c0fc' }}>← Companies</Link></p>
-      <h1 style={{ marginBottom: '1rem' }}>{company?.name || 'Company'}</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: '1rem' }}>
+        <h1 style={{ margin: 0 }}>{company?.name || 'Company'}</h1>
+        {company?.id && (
+          <Link to={`/stats/company/${company.id}`} style={{ ...btn, background: '#495057', textDecoration: 'none' }}>
+            Stats
+          </Link>
+        )}
+      </div>
       {error && <p style={{ color: '#ff6b6b' }}>{error}</p>}
 
       <div style={card}>

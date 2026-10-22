@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import GameHealthTile from '../components/GameHealthTile'
 import LeaderboardTable from '../components/LeaderboardTable'
 import LeaderboardFilterBar from '../components/LeaderboardFilterBar'
@@ -59,7 +60,14 @@ export default function Dashboard() {
         <h2 style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>Game Health</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
           {health.map(g => (
-            <GameHealthTile key={g.game} game={g.game} status={g.status} lastChecked={g.last_checked} />
+            <Link
+              key={g.game}
+              to={`/stats/game/${g.game}`}
+              style={{ textDecoration: 'none', color: 'inherit' }}
+              title={`Open ${g.game} stat sheet`}
+            >
+              <GameHealthTile game={g.game} status={g.status} lastChecked={g.last_checked} />
+            </Link>
           ))}
         </div>
       </section>

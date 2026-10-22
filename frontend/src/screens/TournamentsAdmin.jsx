@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { formatTournamentWindow } from '../leaderboardQuery'
 
@@ -257,7 +258,8 @@ export default function TournamentsAdmin() {
                   <button style={btnMuted} type="button" onClick={() => archiveToggle(t)}>
                     {t.status === 'archived' ? 'Restore' : 'Archive'}
                   </button>
-                  <button style={btnMuted} type="button" onClick={() => runPreview(t)}>Preview</button>
+                    <Link to={`/stats/tournament/${t.id}`} style={{ ...btnMuted, textDecoration: 'none' }}>Stats</Link>
+                    <button style={btnMuted} type="button" onClick={() => runPreview(t)}>Preview</button>
                   <button
                     style={deleteDisabledReason(t) ? { ...btnDanger, opacity: 0.45, cursor: 'not-allowed' } : btnDanger}
                     type="button"

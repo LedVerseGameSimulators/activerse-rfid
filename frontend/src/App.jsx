@@ -12,6 +12,7 @@ import GroupDetail from './screens/GroupDetail'
 import Login from './screens/Login'
 import PublicLeaderboard from './screens/PublicLeaderboard'
 import TournamentsAdmin from './screens/TournamentsAdmin'
+import StatSheet from './screens/StatSheet'
 
 const navStyle = {
   display: 'flex',
@@ -55,6 +56,7 @@ function AppShell() {
           <Route path="/sessions" element={<SessionsAdmin />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/tournaments" element={<TournamentsAdmin />} />
+          <Route path="/stats/:kind/:id" element={<StatSheet />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

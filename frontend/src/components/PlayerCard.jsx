@@ -43,7 +43,10 @@ export default function PlayerCard({ player, activeSession, onStartVisit, onAdju
         <StatusLine done={Boolean(activeSession)} label="Visit active" detail={activeSession ? `${activeSession.minutes_remaining} min left` : 'Start Visit after card is bound'} />
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginTop: '1rem' }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: '1rem', flexWrap: 'wrap' }}>
+        <Link to={`/stats/player/${player.id}`} style={{ ...btnSm, textDecoration: 'none' }}>
+          Stats
+        </Link>
         <button style={btnSm} onClick={() => onBindCard(player)}>
           {hasCard ? 'Rebind Card' : 'Bind Card'}
         </button>

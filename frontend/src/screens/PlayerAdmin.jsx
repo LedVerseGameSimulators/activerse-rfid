@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import RegisterPlayer from './RegisterPlayer'
 import BindCard from './BindCard'
 import { api } from '../api'
@@ -69,6 +70,7 @@ export default function PlayerAdmin() {
               <td style={td}>{p.phone}</td>
               <td style={td}>{p.card_id || '—'}</td>
               <td style={{ ...td, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <Link to={`/stats/player/${p.id}`} style={{ ...btnSm, textDecoration: 'none' }}>Stats</Link>
                 <button style={btnSm} onClick={() => setSelected(p)}>Bind Card</button>
                 <button style={btnSm} onClick={() => setEditing(p)}>Edit</button>
                 <button style={btnSm} onClick={() => viewHistory(p)}>History</button>
