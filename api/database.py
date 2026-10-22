@@ -260,6 +260,8 @@ class Database:
                         name              TEXT NOT NULL,
                         leader_player_id  INTEGER,
                         created_at        TEXT,
+                        archived_at       TEXT,
+                        kind              TEXT DEFAULT 'team',
                         UNIQUE(company_id, name)
                     );
 
@@ -267,7 +269,7 @@ class Database:
                         id         INTEGER PRIMARY KEY AUTOINCREMENT,
                         group_id   INTEGER NOT NULL,
                         player_id  INTEGER NOT NULL,
-                        UNIQUE(player_id)
+                        UNIQUE(group_id, player_id)
                     );
 
                     CREATE TABLE IF NOT EXISTS company_members (
@@ -338,16 +340,27 @@ class Database:
                 self._migrate_central_scores_unique(con)
                 # Rebuild groups so company_id can be NULL (walk-in groups).
                 self._migrate_groups_nullable_company(con)
-                # Rebuild group_members so a player can only be on one group at a time.
-                self._migrate_group_members_unique_player(con)
-                # Backfill company_members for players who were already on a
-                # corporate group before company_members existed.
+                # Rebuild group_members for multi-group membership (drop UNIQUE(player_id)).
+                self._migrate_group_members_multi_group(con)
+                for _col, _typ in (("archived_at", "TEXT"), ("kind", "TEXT DEFAULT 'team'")):
+                    try:
+                        con.execute(f"ALTER TABLE groups ADD COLUMN {_col} {_typ}")
+                    except sqlite3.OperationalError:
+                        pass
+                try:
+                    con.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_groups_archived ON groups(archived_at)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                # Corporate group affiliation before walk-in backfill (P2).
                 con.execute(
                     "INSERT OR IGNORE INTO company_members (company_id, player_id, joined_at) "
                     "SELECT g.company_id, gm.player_id, ? FROM group_members gm "
                     "JOIN groups g ON g.id = gm.group_id WHERE g.company_id IS NOT NULL",
                     (self._now_iso(),),
                 )
+                self._bootstrap_p2_org(con)
                 # Seed default admin if empty
                 row = con.execute("SELECT COUNT(*) AS c FROM ledplay_login").fetchone()
                 if row["c"] == 0:
@@ -496,9 +509,8 @@ class Database:
             con.execute("ALTER TABLE group_members_v2 RENAME TO group_members")
 
     @staticmethod
-    def _migrate_group_members_unique_player(con):
-        """Ensure group_members has UNIQUE(player_id) — one group at a time.
-        Audited against production data before enabling this (zero duplicates)."""
+    def _migrate_group_members_multi_group(con):
+        """Drop UNIQUE(player_id); keep UNIQUE(group_id, player_id) only (P2)."""
         names = Database._table_names(con)
         if "group_members_v2" in names and "group_members" in names:
             con.execute("DROP TABLE group_members_v2")
@@ -509,21 +521,188 @@ class Database:
         if not row or not row["sql"]:
             return
         norm = "".join(row["sql"].split())
-        if "UNIQUE(player_id)" in norm:
-            return  # already migrated
+        if "UNIQUE(player_id)" not in norm:
+            return  # already multi-group
 
         con.executescript("""
             CREATE TABLE group_members_v2 (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 group_id   INTEGER NOT NULL,
                 player_id  INTEGER NOT NULL,
-                UNIQUE(player_id)
+                UNIQUE(group_id, player_id)
             );
             INSERT OR IGNORE INTO group_members_v2 (id, group_id, player_id)
             SELECT id, group_id, player_id FROM group_members;
             DROP TABLE group_members;
             ALTER TABLE group_members_v2 RENAME TO group_members;
         """)
+
+    def _bootstrap_p2_org(self, con):
+        """Walk-in company setting + backfill company/solo groups (idempotent)."""
+        walk_id = self._ensure_walk_in_company_row(con)
+        self._backfill_walk_in_members(con, walk_id)
+        self._backfill_solo_groups(con, walk_id)
+
+    def _ensure_walk_in_company_row(self, con) -> int:
+        row = con.execute(
+            "SELECT value FROM settings WHERE key = 'walk_in_company_id'"
+        ).fetchone()
+        if row and row["value"]:
+            try:
+                cid = int(row["value"])
+            except (TypeError, ValueError):
+                cid = None
+            else:
+                if con.execute("SELECT 1 FROM companies WHERE id = ?", (cid,)).fetchone():
+                    return cid
+        existing = con.execute(
+            "SELECT id FROM companies WHERE lower(name) = lower(?)", ("Walk-in",)
+        ).fetchone()
+        if existing:
+            cid = int(existing["id"])
+        else:
+            cur = con.execute(
+                "INSERT INTO companies (name, notes, created_at) VALUES (?, ?, ?)",
+                ("Walk-in", "", self._now_iso()),
+            )
+            cid = int(cur.lastrowid)
+        con.execute(
+            "INSERT INTO settings (key, value) VALUES ('walk_in_company_id', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(cid),),
+        )
+        return cid
+
+    def get_walk_in_company_id(self) -> int:
+        with self._lock:
+            con = self._conn()
+            try:
+                return self._ensure_walk_in_company_row(con)
+            finally:
+                con.close()
+
+    def _backfill_walk_in_members(self, con, walk_in_id: int):
+        con.execute(
+            "INSERT OR IGNORE INTO company_members (company_id, player_id, joined_at) "
+            "SELECT ?, ci.custom_id, ? FROM custom_info ci "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM company_members cm WHERE cm.player_id = ci.custom_id"
+            ")",
+            (walk_in_id, self._now_iso()),
+        )
+
+    def _create_solo_group_locked(self, con, player_id: int, player_name: str, company_id: int) -> int:
+        existing = con.execute(
+            "SELECT g.id FROM groups g "
+            "JOIN group_members gm ON gm.group_id = g.id "
+            "WHERE gm.player_id = ? AND g.kind = 'solo' LIMIT 1",
+            (player_id,),
+        ).fetchone()
+        if existing:
+            return int(existing["id"])
+        base_name = (player_name or f"Player {player_id}").strip()
+        solo_name = base_name
+        if con.execute(
+            "SELECT 1 FROM groups WHERE company_id = ? AND lower(name) = lower(?)",
+            (company_id, solo_name),
+        ).fetchone():
+            solo_name = f"{base_name} ({player_id})"
+        cur = con.execute(
+            "INSERT INTO groups (company_id, name, leader_player_id, created_at, kind) "
+            "VALUES (?, ?, ?, ?, 'solo')",
+            (company_id, solo_name, player_id, self._now_iso()),
+        )
+        gid = int(cur.lastrowid)
+        con.execute(
+            "INSERT OR IGNORE INTO group_members (group_id, player_id) VALUES (?, ?)",
+            (gid, player_id),
+        )
+        return gid
+
+    def _backfill_solo_groups(self, con, walk_in_id: int):
+        rows = con.execute(
+            "SELECT ci.custom_id, ci.name FROM custom_info ci "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM group_members gm JOIN groups g ON g.id = gm.group_id "
+            "  WHERE gm.player_id = ci.custom_id AND g.kind = 'solo'"
+            ")"
+        ).fetchall()
+        for row in rows:
+            self._create_solo_group_locked(
+                con, int(row["custom_id"]), row["name"], walk_in_id
+            )
+
+    def ensure_player_org_on_register(self, player_id: int):
+        """Walk-in company + solo group (idempotent)."""
+        with self._lock:
+            con = self._conn()
+            try:
+                walk_id = self._ensure_walk_in_company_row(con)
+                con.execute(
+                    "INSERT OR IGNORE INTO company_members (company_id, player_id, joined_at) "
+                    "VALUES (?, ?, ?)",
+                    (walk_id, player_id, self._now_iso()),
+                )
+                prow = con.execute(
+                    "SELECT name FROM custom_info WHERE custom_id = ?", (player_id,)
+                ).fetchone()
+                name = prow["name"] if prow else f"Player {player_id}"
+                self._create_solo_group_locked(con, player_id, name, walk_id)
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
+
+    def ensure_solo_group_for_player(self, player_id: int):
+        """Solo group only (import / linked players)."""
+        with self._lock:
+            con = self._conn()
+            try:
+                walk_id = self._ensure_walk_in_company_row(con)
+                con.execute(
+                    "INSERT OR IGNORE INTO company_members (company_id, player_id, joined_at) "
+                    "VALUES (?, ?, ?)",
+                    (walk_id, player_id, self._now_iso()),
+                )
+                prow = con.execute(
+                    "SELECT name FROM custom_info WHERE custom_id = ?", (player_id,)
+                ).fetchone()
+                name = prow["name"] if prow else f"Player {player_id}"
+                self._create_solo_group_locked(con, player_id, name, walk_id)
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
+
+    def get_solo_group_id(self, player_id: int) -> Optional[int]:
+        row = self._execute(
+            "SELECT g.id FROM groups g "
+            "JOIN group_members gm ON gm.group_id = g.id "
+            "WHERE gm.player_id = ? AND g.kind = 'solo' LIMIT 1",
+            (player_id,),
+            fetch="one",
+        )
+        return int(row["id"]) if row else None
+
+    def list_groups_for_player(self, player_id: int, include_archived: bool = False):
+        clauses = ["gm.player_id = ?"]
+        params: list = [player_id]
+        if not include_archived:
+            clauses.append("(g.archived_at IS NULL)")
+        where = " AND ".join(clauses)
+        rows = self._execute(
+            f"SELECT g.*, c.name AS company_name FROM group_members gm "
+            f"JOIN groups g ON g.id = gm.group_id "
+            f"LEFT JOIN companies c ON c.id = g.company_id "
+            f"WHERE {where} ORDER BY g.kind = 'solo' DESC, g.name",
+            tuple(params),
+            fetch="all",
+        )
+        return [dict(r) for r in rows] if rows else []
 
     @staticmethod
     def _now_iso() -> str:
@@ -789,13 +968,15 @@ class Database:
 
                 grp = con.execute(
                     "SELECT gm.group_id, g.name AS group_name FROM group_members gm "
-                    "JOIN groups g ON g.id = gm.group_id WHERE gm.player_id = ?",
+                    "JOIN groups g ON g.id = gm.group_id "
+                    "WHERE gm.player_id = ? AND COALESCE(g.kind, 'team') != 'solo' "
+                    "AND g.archived_at IS NULL LIMIT 1",
                     (player_id,),
                 ).fetchone()
                 if grp:
                     raise ValueError(
                         f"Player is on team '{grp['group_name']}' — use Start Visit for "
-                        f"that group, or remove them from the group to allow solo play."
+                        f"that group, or remove them from the team to allow solo issue."
                     )
 
                 company_membership = con.execute(
@@ -1378,11 +1559,28 @@ class Database:
     def get_group_id_for_player(self, player_id: int) -> Optional[int]:
         """Fallback when player_sessions.group_id is unset.
 
-        With multi-group membership (future), this arbitrary LIMIT 1 pick may
-        be wrong — callers should prefer the session's stamped group_id.
+        Prefer the player's open visit group; else solo group; else first active
+        non-archived membership. Validate/poller should use session-stamped group_id.
         """
+        now = self._now_iso()
+        visit = self._execute(
+            "SELECT ps.group_id FROM player_sessions ps "
+            "WHERE ps.player_id = ? AND ps.closed_at IS NULL AND ps.expiry_at > ? "
+            "AND ps.group_id IS NOT NULL "
+            "ORDER BY ps.expiry_at DESC LIMIT 1",
+            (player_id, now),
+            fetch="one",
+        )
+        if visit and visit["group_id"] is not None:
+            return int(visit["group_id"])
+        solo = self.get_solo_group_id(player_id)
+        if solo is not None:
+            return solo
         row = self._execute(
-            "SELECT group_id FROM group_members WHERE player_id = ? LIMIT 1",
+            "SELECT gm.group_id FROM group_members gm "
+            "JOIN groups g ON g.id = gm.group_id "
+            "WHERE gm.player_id = ? AND g.archived_at IS NULL "
+            "ORDER BY g.id DESC LIMIT 1",
             (player_id,),
             fetch="one",
         )
@@ -1562,9 +1760,14 @@ class Database:
     def get_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20,
                         company_id: Optional[int] = None, group_id: Optional[int] = None,
                         play_mode: Optional[str] = None, min_size: Optional[int] = None,
-                        max_size: Optional[int] = None, two_card: Optional[bool] = None):
+                        max_size: Optional[int] = None, two_card: Optional[bool] = None,
+                        include_archived: bool = False):
         clauses = ["cs.player_id IS NOT NULL"]
         params: list = []
+        join_groups = ""
+        if not include_archived:
+            join_groups = "LEFT JOIN groups g ON g.id = cs.group_id "
+            clauses.append("(cs.group_id IS NULL OR g.archived_at IS NULL)")
         if game != "all":
             clauses.append("cs.game = ?")
             params.append(game)
@@ -1602,6 +1805,7 @@ class Database:
         params.append(limit)
         rows = self._execute(
             f"SELECT cs.*, ci.name AS player_name FROM central_scores cs "
+            f"{join_groups}"
             f"LEFT JOIN custom_info ci ON ci.custom_id = cs.player_id "
             f"WHERE {where} ORDER BY cs.score DESC LIMIT ?",
             tuple(params),
@@ -1612,12 +1816,17 @@ class Database:
     def get_team_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20,
                              company_id: Optional[int] = None, group_id: Optional[int] = None,
                              play_mode: Optional[str] = None, min_size: Optional[int] = None,
-                             max_size: Optional[int] = None, two_card: Optional[bool] = None):
+                             max_size: Optional[int] = None, two_card: Optional[bool] = None,
+                             include_archived: bool = False):
         clauses = [
             "cts.session_id IS NOT NULL",
             "cts.group_id IS NOT NULL",
         ]
         params: list = []
+        join_groups = ""
+        if not include_archived:
+            join_groups = "LEFT JOIN groups g ON g.id = cts.group_id "
+            clauses.append("(g.id IS NULL OR g.archived_at IS NULL)")
         if game != "all":
             clauses.append("cts.game = ?")
             params.append(game)
@@ -1655,6 +1864,7 @@ class Database:
         params.append(limit)
         rows = self._execute(
             f"SELECT cts.* FROM central_team_scores cts "
+            f"{join_groups}"
             f"WHERE {where} ORDER BY cts.score DESC LIMIT ?",
             tuple(params),
             fetch="all",
@@ -1734,34 +1944,74 @@ class Database:
         )
 
     def get_company_group_map(self, player_ids: list[int]) -> dict:
-        """Batch company+group lookup for reception/search screens (avoids N+1).
-        Only affiliated players (in company_members) appear in the result."""
+        """Batch company+group lookup for reception/search screens.
+
+        primary_group_id prefers solo group; group_name lists all active groups.
+        """
         if not player_ids:
             return {}
         placeholders = ",".join("?" * len(player_ids))
         rows = self._execute(
-            f"SELECT cm.player_id, cm.company_id, co.name AS company_name, "
-            f"gm.group_id, g.name AS group_name FROM company_members cm "
+            f"SELECT cm.player_id, cm.company_id, co.name AS company_name "
+            f"FROM company_members cm "
             f"JOIN companies co ON co.id = cm.company_id "
-            f"LEFT JOIN group_members gm ON gm.player_id = cm.player_id "
-            f"LEFT JOIN groups g ON g.id = gm.group_id "
             f"WHERE cm.player_id IN ({placeholders})",
             tuple(player_ids), fetch="all",
         )
-        return {r["player_id"]: dict(r) for r in rows} if rows else {}
+        if not rows:
+            return {}
+        out: dict = {}
+        for r in rows:
+            pid = int(r["player_id"])
+            groups = self.list_groups_for_player(pid, include_archived=False)
+            names = [g["name"] for g in groups]
+            primary = self.get_solo_group_id(pid)
+            if primary is None and groups:
+                primary = int(groups[0]["id"])
+            joined = ", ".join(names) if names else None
+            out[pid] = {
+                "company_id": r["company_id"],
+                "company_name": r["company_name"],
+                "group_id": primary,
+                "primary_group_id": primary,
+                "group_name": joined,
+                "group_names": joined,
+            }
+        return out
 
     def list_company_members(self, company_id: int):
         rows = self._execute(
-            "SELECT cm.player_id, cm.joined_at, ci.name, ci.phone_num AS phone, "
-            "gm.group_id, g.name AS group_name "
+            "SELECT cm.player_id, cm.joined_at, ci.name, ci.phone_num AS phone "
             "FROM company_members cm "
             "JOIN custom_info ci ON ci.custom_id = cm.player_id "
-            "LEFT JOIN group_members gm ON gm.player_id = cm.player_id "
-            "LEFT JOIN groups g ON g.id = gm.group_id "
             "WHERE cm.company_id = ? ORDER BY ci.name",
             (company_id,), fetch="all",
         )
-        return [dict(r) for r in rows] if rows else []
+        if not rows:
+            return []
+        out = []
+        for r in rows:
+            d = dict(r)
+            pid = int(d["player_id"])
+            groups = [
+                g for g in self.list_groups_for_player(pid, include_archived=False)
+                if g.get("company_id") == company_id or g.get("kind") == "solo"
+            ]
+            team_groups = [g for g in groups if (g.get("kind") or "team") != "solo"]
+            primary = self.get_solo_group_id(pid)
+            if team_groups:
+                d["group_id"] = team_groups[0]["id"]
+                d["group_name"] = ", ".join(g["name"] for g in groups)
+            elif primary:
+                d["group_id"] = primary
+                d["group_name"] = next(
+                    (g["name"] for g in groups if g["id"] == primary), None
+                )
+            else:
+                d["group_id"] = None
+                d["group_name"] = None
+            out.append(d)
+        return out
 
     def add_company_member_atomic(self, company_id: int, player_id: int):
         """Raises ValueError if player already belongs to a DIFFERENT company."""
@@ -1773,15 +2023,24 @@ class Database:
                     (player_id,),
                 ).fetchone()
                 if existing and existing["company_id"] != company_id:
-                    raise ValueError(
-                        f"Player already belongs to company #{existing['company_id']}; "
-                        f"cannot also join company #{company_id}."
+                    walk_id = self._ensure_walk_in_company_row(con)
+                    if int(existing["company_id"]) == walk_id:
+                        con.execute(
+                            "UPDATE company_members SET company_id = ?, joined_at = ? "
+                            "WHERE player_id = ?",
+                            (company_id, self._now_iso(), player_id),
+                        )
+                    else:
+                        raise ValueError(
+                            f"Player already belongs to company #{existing['company_id']}; "
+                            f"cannot also join company #{company_id}."
+                        )
+                else:
+                    con.execute(
+                        "INSERT OR IGNORE INTO company_members (company_id, player_id, joined_at) "
+                        "VALUES (?, ?, ?)",
+                        (company_id, player_id, self._now_iso()),
                     )
-                con.execute(
-                    "INSERT OR IGNORE INTO company_members (company_id, player_id, joined_at) "
-                    "VALUES (?, ?, ?)",
-                    (company_id, player_id, self._now_iso()),
-                )
                 con.commit()
             except Exception:
                 con.rollback()
@@ -1825,33 +2084,37 @@ class Database:
             finally:
                 con.close()
 
-    def list_groups(self, company_id: Optional[int] = None, walk_in_only: bool = False):
+    def list_groups(self, company_id: Optional[int] = None, walk_in_only: bool = False,
+                    include_archived: bool = False):
         base = (
             "SELECT g.*, c.name AS company_name, "
             "(SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count "
             "FROM groups g LEFT JOIN companies c ON c.id = g.company_id "
         )
+        archived = "" if include_archived else " AND g.archived_at IS NULL"
         if walk_in_only:
             rows = self._execute(
-                base + "WHERE g.company_id IS NULL ORDER BY g.name", fetch="all"
+                base + f"WHERE g.company_id IS NULL{archived} ORDER BY g.name", fetch="all"
             )
         elif company_id is not None:
             rows = self._execute(
-                base + "WHERE g.company_id = ? ORDER BY g.name",
+                base + f"WHERE g.company_id = ?{archived} ORDER BY g.name",
                 (company_id,),
                 fetch="all",
             )
         else:
+            where = f"WHERE g.archived_at IS NULL" if not include_archived else ""
             rows = self._execute(
-                base + "ORDER BY c.name, g.name", fetch="all"
+                base + f"{where} ORDER BY c.name, g.name", fetch="all"
             )
         return [dict(r) for r in rows] if rows else []
 
     def create_group(self, company_id: Optional[int], name: str,
-                      leader_player_id: Optional[int] = None):
+                      leader_player_id: Optional[int] = None, kind: str = "team"):
         gid = self._executemany_return_id(
-            "INSERT INTO groups (company_id, name, leader_player_id, created_at) VALUES (?, ?, ?, ?)",
-            (company_id, name.strip(), leader_player_id, self._now_iso()),
+            "INSERT INTO groups (company_id, name, leader_player_id, created_at, kind) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (company_id, name.strip(), leader_player_id, self._now_iso(), kind),
         )
         if leader_player_id:
             self.add_group_member_atomic(gid, leader_player_id)
@@ -1902,7 +2165,61 @@ class Database:
         )
         return self.get_group(group_id)
 
+    def _group_has_history(self, group_id: int) -> bool:
+        if self._execute(
+            "SELECT 1 FROM central_scores WHERE group_id = ? LIMIT 1",
+            (group_id,), fetch="one",
+        ):
+            return True
+        if self._execute(
+            "SELECT 1 FROM central_team_scores WHERE group_id = ? LIMIT 1",
+            (group_id,), fetch="one",
+        ):
+            return True
+        if self._execute(
+            "SELECT 1 FROM player_sessions WHERE group_id = ? LIMIT 1",
+            (group_id,), fetch="one",
+        ):
+            return True
+        return False
+
+    def archive_group(self, group_id: int):
+        row = self.get_group(group_id)
+        if not row:
+            raise ValueError("Group not found")
+        if row.get("kind") == "solo":
+            raise ValueError("Cannot archive a player's solo group")
+        now = self._now_iso()
+        open_session = self._execute(
+            "SELECT 1 FROM player_sessions WHERE group_id = ? AND closed_at IS NULL "
+            "AND expiry_at > ? LIMIT 1", (group_id, now), fetch="one"
+        )
+        if open_session:
+            raise ValueError(
+                "Cannot archive group with an active visit; close the session first."
+            )
+        self._execute(
+            "UPDATE groups SET archived_at = ? WHERE id = ?",
+            (now, group_id),
+        )
+        return self.get_group(group_id)
+
+    def unarchive_group(self, group_id: int):
+        if not self.get_group(group_id):
+            raise ValueError("Group not found")
+        self._execute(
+            "UPDATE groups SET archived_at = NULL WHERE id = ?",
+            (group_id,),
+        )
+        return self.get_group(group_id)
+
     def delete_group(self, group_id: int):
+        """Hard-delete only empty groups with no history; else soft-archive."""
+        row = self.get_group(group_id)
+        if not row:
+            raise ValueError("Group not found")
+        if row.get("kind") == "solo":
+            raise ValueError("Cannot delete a player's solo group")
         now = self._now_iso()
         open_session = self._execute(
             "SELECT 1 FROM player_sessions WHERE group_id = ? AND closed_at IS NULL "
@@ -1912,8 +2229,20 @@ class Database:
             raise ValueError(
                 "Cannot delete group with an active visit; close the session first."
             )
-        self._execute("DELETE FROM group_members WHERE group_id = ?", (group_id,))
-        return self._rowcount("DELETE FROM groups WHERE id = ?", (group_id,))
+        member_count = self._execute(
+            "SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?",
+            (group_id,), fetch="one",
+        )
+        members = int(member_count["c"]) if member_count else 0
+        if self._group_has_history(group_id):
+            self.archive_group(group_id)
+            return {"archived": True}
+        if members > 0:
+            raise ValueError(
+                "Group still has members; remove all members before deleting."
+            )
+        deleted = self._rowcount("DELETE FROM groups WHERE id = ?", (group_id,))
+        return {"archived": False, "deleted": deleted > 0}
 
     def get_group_members(self, group_id: int):
         rows = self._execute(
@@ -1947,31 +2276,29 @@ class Database:
                 company_id = group["company_id"]
 
                 if company_id is not None:
+                    walk_id = self._ensure_walk_in_company_row(con)
                     membership = con.execute(
                         "SELECT company_id FROM company_members WHERE player_id = ?",
                         (player_id,),
                     ).fetchone()
                     if membership and membership["company_id"] != company_id:
-                        raise ValueError(
-                            f"Player already belongs to company #{membership['company_id']}; "
-                            f"cannot join a group under company #{company_id}."
-                        )
+                        if int(membership["company_id"]) == walk_id:
+                            con.execute(
+                                "UPDATE company_members SET company_id = ?, joined_at = ? "
+                                "WHERE player_id = ?",
+                                (company_id, self._now_iso(), player_id),
+                            )
+                        else:
+                            raise ValueError(
+                                f"Player already belongs to company #{membership['company_id']}; "
+                                f"cannot join a group under company #{company_id}."
+                            )
                     if not membership:
                         con.execute(
                             "INSERT INTO company_members (company_id, player_id, joined_at) "
                             "VALUES (?, ?, ?)",
                             (company_id, player_id, self._now_iso()),
                         )
-
-                other = con.execute(
-                    "SELECT group_id FROM group_members WHERE player_id = ? AND group_id != ?",
-                    (player_id, group_id),
-                ).fetchone()
-                if other:
-                    raise ValueError(
-                        f"Player is already on another group (#{other['group_id']}). "
-                        f"Transfer them or remove them from that group first."
-                    )
 
                 con.execute(
                     "INSERT OR IGNORE INTO group_members (group_id, player_id) VALUES (?, ?)",
@@ -2000,7 +2327,8 @@ class Database:
                 old_row = con.execute(
                     "SELECT gm.group_id, g.name, g.leader_player_id, g.company_id "
                     "FROM group_members gm JOIN groups g ON g.id = gm.group_id "
-                    "WHERE gm.player_id = ? AND gm.group_id != ?",
+                    "WHERE gm.player_id = ? AND gm.group_id != ? "
+                    "AND COALESCE(g.kind, 'team') != 'solo'",
                     (player_id, new_group_id),
                 ).fetchone()
 

@@ -12,13 +12,15 @@ export default function Dashboard() {
   const [period, setPeriod] = useState('alltime')
   const [board, setBoard] = useState('individual')
   const [companyId, setCompanyId] = useState('')
+  const [includeArchived, setIncludeArchived] = useState(false)
 
   const load = async () => {
     try {
       const companyQ = companyId ? `&company_id=${companyId}` : ''
+      const archQ = includeArchived ? '&include_archived=true' : ''
       const [h, lb, st, cos] = await Promise.all([
         api('/dashboard/health'),
-        api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}${companyQ}`),
+        api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}${companyQ}${archQ}`),
         api('/dashboard/stats'),
         api('/companies'),
       ])
@@ -31,7 +33,7 @@ export default function Dashboard() {
     }
   }
 
-  useEffect(() => { load() }, [game, period, board, companyId])
+  useEffect(() => { load() }, [game, period, board, companyId, includeArchived])
 
   return (
     <div>
@@ -82,6 +84,15 @@ export default function Dashboard() {
             <option value="month">This Month</option>
             <option value="alltime">All Time</option>
           </select>
+          <label style={{ color: '#9aa0a6', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={includeArchived}
+              onChange={e => setIncludeArchived(e.target.checked)}
+              style={{ marginRight: 6 }}
+            />
+            Include archived groups
+          </label>
           <button style={btn} onClick={load}>Refresh</button>
         </div>
         <LeaderboardTable rows={leaderboard} />

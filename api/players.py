@@ -29,8 +29,12 @@ def _apply_org_badges(db: Database, players_api: list) -> list:
         org = org_map.get(p["id"])
         p["company_id"] = org["company_id"] if org else None
         p["company_name"] = org["company_name"] if org else None
-        p["group_id"] = org["group_id"] if org else None
-        p["group_name"] = org["group_name"] if org else None
+        p["group_id"] = org.get("primary_group_id") if org else None
+        p["primary_group_id"] = org.get("primary_group_id") if org else None
+        p["group_name"] = org.get("group_names") if org else None
+        p["group_names"] = org.get("group_names") if org else None
+        memberships = db.list_groups_for_player(p["id"], include_archived=False)
+        p["has_team_group"] = any((g.get("kind") or "team") != "solo" for g in memberships)
     return players_api
 
 
@@ -81,6 +85,8 @@ def register_player(db: Database, name: str, phone: str, email=None, age=None,
     # Initial recharge_record (amount=0, time=0) — same as original register()
     str_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db.insert_to_table_recharge_record(str(custom_id), "0", "0", str_time)
+
+    db.ensure_player_org_on_register(custom_id)
 
     return get_player(db, custom_id)
 

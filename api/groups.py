@@ -7,8 +7,9 @@ from . import players, sessions
 from .database import Database
 
 
-def list_groups(db: Database, company_id: Optional[int] = None, walk_in_only: bool = False):
-    return db.list_groups(company_id, walk_in_only=walk_in_only)
+def list_groups(db: Database, company_id: Optional[int] = None, walk_in_only: bool = False,
+                include_archived: bool = False):
+    return db.list_groups(company_id, walk_in_only=walk_in_only, include_archived=include_archived)
 
 
 def create_group(db: Database, company_id: Optional[int], name: str,
@@ -45,10 +46,34 @@ def delete_group(db: Database, group_id: int):
     if not db.get_group(group_id):
         raise HTTPException(404, "Group not found")
     try:
-        db.delete_group(group_id)
+        result = db.delete_group(group_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"success": True, "group_id": group_id}
+    return {
+        "success": True,
+        "group_id": group_id,
+        "archived": bool(result.get("archived")),
+    }
+
+
+def archive_group(db: Database, group_id: int):
+    if not db.get_group(group_id):
+        raise HTTPException(404, "Group not found")
+    try:
+        db.archive_group(group_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _group_detail(db, group_id)
+
+
+def unarchive_group(db: Database, group_id: int):
+    if not db.get_group(group_id):
+        raise HTTPException(404, "Group not found")
+    try:
+        db.unarchive_group(group_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _group_detail(db, group_id)
 
 
 def add_member(db: Database, group_id: int, player_id: Optional[int] = None,
@@ -130,6 +155,8 @@ def _group_detail(db: Database, group_id: int):
         "company_id": row["company_id"],
         "company_name": row.get("company_name"),
         "name": row["name"],
+        "kind": row.get("kind") or "team",
+        "archived_at": row.get("archived_at"),
         "leader_player_id": row.get("leader_player_id"),
         "created_at": row.get("created_at"),
         "members": [

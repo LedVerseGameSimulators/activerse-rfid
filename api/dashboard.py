@@ -13,10 +13,12 @@ def get_leaderboard(db: Database, game: str = "all", period: str = "alltime",
                     limit: int = 20, board: str = "individual",
                     company_id: Optional[int] = None, group_id: Optional[int] = None,
                     play_mode: Optional[str] = None, min_size: Optional[int] = None,
-                    max_size: Optional[int] = None, two_card: Optional[bool] = None):
+                    max_size: Optional[int] = None, two_card: Optional[bool] = None,
+                    include_archived: bool = False):
     lb_kwargs = dict(
         company_id=company_id, group_id=group_id, play_mode=play_mode,
         min_size=min_size, max_size=max_size, two_card=two_card,
+        include_archived=include_archived,
     )
     if board == "team":
         rows = db.get_team_leaderboard(game, period, limit, **lb_kwargs)

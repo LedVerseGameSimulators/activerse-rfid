@@ -59,7 +59,8 @@ def test_list_groups_walk_in_only_filter(db):
     assert names == {"Birthday Party Team"}
 
 
-def test_group_members_unique_on_player_id(db):
+def test_group_members_unique_on_group_and_player(db):
+    """P2: UNIQUE(group_id, player_id) — same player may join many groups."""
     company = db.create_company("Acme")
     group_a = db.create_group(company["id"], "Team A")
     group_b = db.create_group(company["id"], "Team B")
@@ -70,11 +71,15 @@ def test_group_members_unique_on_player_id(db):
         "INSERT INTO group_members (group_id, player_id) VALUES (?, ?)",
         (group_a["id"], player_id),
     )
+    con.execute(
+        "INSERT INTO group_members (group_id, player_id) VALUES (?, ?)",
+        (group_b["id"], player_id),
+    )
     con.commit()
     try:
         con.execute(
             "INSERT INTO group_members (group_id, player_id) VALUES (?, ?)",
-            (group_b["id"], player_id),
+            (group_a["id"], player_id),
         )
         con.commit()
         raised = False
@@ -82,4 +87,4 @@ def test_group_members_unique_on_player_id(db):
         raised = True
     finally:
         con.close()
-    assert raised, "player_id should be UNIQUE on group_members (one group at a time)"
+    assert raised, "duplicate (group_id, player_id) should be rejected"

@@ -12,7 +12,8 @@ def test_get_company_group_map_returns_company_and_group(db):
     result = db.get_company_group_map([player_id])
 
     assert result[player_id]["company_id"] == company["id"]
-    assert result[player_id]["group_id"] == group["id"]
+    assert result[player_id]["primary_group_id"] == result[player_id]["group_id"]
+    assert "Team A" in (result[player_id]["group_names"] or "")
 
 
 def test_get_company_group_map_company_only_no_group(db):

@@ -131,9 +131,21 @@ def test_guard_post_sessions_retired(client):
     pass
 
 
-@pytest.mark.skip(reason="P2: UNIQUE(player_id) on group_members blocks two groups until Phase 2")
 def test_guard_validate_after_multi_group_migration(db):
-    pass
+    """Player on team + solo; open visit on team — validate uses session group_id."""
+    leader = _make_player(db, "555-g050", "MultiLead", credit_minutes=60)
+    db.ensure_solo_group_for_player(leader)
+    company = db.create_company(f"Co-{uuid.uuid4().hex[:6]}")
+    team = db.create_group(company["id"], f"Team-{uuid.uuid4().hex[:6]}")
+    db.add_group_member_atomic(team["id"], leader)
+    db.set_group_leader(team["id"], leader)
+    _bind_card(db, leader, "GUARDMULTI01")
+    visit = db.issue_group_visit_atomic(team["id"], 30, card_id="GUARDMULTI01")
+    out = sessions.validate_card(db, "GUARDMULTI01")
+    assert out["valid"] is True
+    assert out["group_id"] == team["id"]
+    assert out["session_id"] == visit["session_id"]
+    assert db.get_group_id_for_player(leader) == team["id"]
 
 
 def test_guard_poller_qp_n5(db):

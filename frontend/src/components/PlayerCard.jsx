@@ -6,7 +6,7 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
 
   const hasCard = Boolean(player.card_id)
   const creditBalance = player.credit_balance ?? 0
-  const onGroup = Boolean(player.group_id)
+  const onTeamGroup = Boolean(player.has_team_group)
 
   return (
     <div style={cardStyle}>
@@ -14,13 +14,13 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
       <p style={muted}>Phone: {player.phone}</p>
       {player.email && <p style={muted}>Email: {player.email}</p>}
       {player.age != null && <p style={muted}>Age: {player.age}</p>}
-      {(player.company_id || player.group_id) && (
+      {(player.company_id || player.group_names || player.group_name) && (
         <p style={{ marginTop: 6 }}>
           {player.company_id && <span style={badge}>{player.company_name}</span>}
-          {player.group_id && (
-            <Link to={`/groups/${player.group_id}`} style={{ ...badge, color: '#74c0fc', textDecoration: 'none' }}>
-              {player.group_name}
-            </Link>
+          {(player.group_names || player.group_name) && (
+            <span style={{ ...badge, color: '#74c0fc' }}>
+              {player.group_names || player.group_name}
+            </span>
           )}
         </p>
       )}
@@ -65,14 +65,13 @@ export default function PlayerCard({ player, activeSession, onIssue, onAdjust, o
         </div>
       )}
 
-      {hasCard && !activeSession && onGroup && (
+      {hasCard && !activeSession && onTeamGroup && (
         <p style={{ ...muted, marginTop: '1rem', color: '#fcc419' }}>
-          On team <Link to={`/groups/${player.group_id}`} style={{ color: '#fcc419' }}>{player.group_name}</Link> —
-          use Start Visit on that group instead of a solo session.
+          Player is on a team group — use Start Visit on that group (solo group is kept separately).
         </p>
       )}
 
-      {hasCard && !activeSession && !onGroup && (
+      {hasCard && !activeSession && !onTeamGroup && (
         <button style={{ ...btnSm, marginTop: '1rem' }} onClick={() => onIssue(player)}>
           Issue Session
         </button>

@@ -119,12 +119,29 @@ export default function GroupDetail() {
   }
 
   const deleteGroup = async () => {
-    if (!confirm(`Delete group "${group?.name}"?`)) return
+    if (!confirm(`Delete or archive group "${group?.name}"?`)) return
     try {
-      await api(`/groups/${id}`, { method: 'DELETE' })
-      nav('/groups')
+      const res = await api(`/groups/${id}`, { method: 'DELETE' })
+      if (res.archived) load()
+      else nav('/groups')
     } catch (e) {
       alert(e.message)
+    }
+  }
+
+  const archiveGroup = async () => {
+    try {
+      setGroup(await api(`/groups/${id}/archive`, { method: 'POST' }))
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const unarchiveGroup = async () => {
+    try {
+      setGroup(await api(`/groups/${id}/unarchive`, { method: 'POST' }))
+    } catch (e) {
+      setError(e.message)
     }
   }
 
@@ -139,13 +156,27 @@ export default function GroupDetail() {
         )}
       </p>
       <h1 style={{ marginBottom: '0.25rem' }}>{group?.name}</h1>
-      <p style={{ color: '#9aa0a6', marginBottom: '1rem' }}>{group?.company_name}</p>
+      <p style={{ color: '#9aa0a6', marginBottom: '1rem' }}>
+        {group?.company_name}
+        {group?.kind === 'solo' && ' · Solo group'}
+        {group?.archived_at && ' · Archived'}
+      </p>
       {error && <p style={{ color: '#ff6b6b' }}>{error}</p>}
 
       <div style={card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2 style={{ fontSize: '1rem', margin: 0 }}>Members</h2>
-          <button style={{ ...btn, background: '#ff6b6b' }} onClick={deleteGroup}>Delete group</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {group?.kind !== 'solo' && !group?.archived_at && (
+              <button style={{ ...btn, background: '#868e96' }} onClick={archiveGroup}>Archive</button>
+            )}
+            {group?.archived_at && (
+              <button style={{ ...btn, background: '#2f9e44' }} onClick={unarchiveGroup}>Unarchive</button>
+            )}
+            {group?.kind !== 'solo' && (
+              <button style={{ ...btn, background: '#ff6b6b' }} onClick={deleteGroup}>Delete</button>
+            )}
+          </div>
         </div>
         <ul style={{ listStyle: 'none', padding: 0 }}>
           {(group?.members || []).map(m => (

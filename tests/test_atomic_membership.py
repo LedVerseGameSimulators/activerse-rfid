@@ -70,14 +70,16 @@ def test_add_group_member_atomic_rejects_cross_company(db):
         db.add_group_member_atomic(group_b["id"], player_id)
 
 
-def test_add_group_member_atomic_rejects_second_group(db):
+def test_add_group_member_atomic_allows_second_group(db):
+    """P2: players may belong to multiple groups (e.g. solo + team)."""
     company = db.create_company("Acme")
     group_1 = db.create_group(company["id"], "Team A")
     group_2 = db.create_group(company["id"], "Team B")
     player_id = _make_player(db, "555-0012", "Finn")
     db.add_group_member_atomic(group_1["id"], player_id)
-    with pytest.raises(ValueError):
-        db.add_group_member_atomic(group_2["id"], player_id)
+    db.add_group_member_atomic(group_2["id"], player_id)
+    gids = {g["id"] for g in db.list_groups_for_player(player_id)}
+    assert group_1["id"] in gids and group_2["id"] in gids
 
 
 def test_add_group_member_atomic_walk_in_group_skips_company_checks(db):
@@ -155,10 +157,12 @@ def test_delete_group_blocked_by_open_session(db):
 
 
 def test_delete_group_keeps_company_members(db):
+    """P2: hard-delete requires empty group; membership survives group removal."""
     company = db.create_company("Acme")
     group = db.create_group(company["id"], "Team A")
     player_id = _make_player(db, "555-0031", "Mona")
     db.add_group_member_atomic(group["id"], player_id)
+    db.remove_group_member(group["id"], player_id)
 
     db.delete_group(group["id"])
 

@@ -118,6 +118,7 @@ def import_excel(db: Database, upload: UploadFile) -> dict:
                 report["created_players"] += 1
 
             db.add_group_member_atomic(group["id"], pid)
+            db.ensure_solo_group_for_player(pid)
             key = (company["id"], group["id"])
             pending_leaders.setdefault(key, []).append((i, pid, is_leader))
         except Exception as e:
@@ -235,6 +236,7 @@ def import_excel_for_company(db: Database, company_id: int, upload: UploadFile) 
 
             db.add_company_member_atomic(company_id, pid)
             report["company_members_added"] += 1
+            db.ensure_solo_group_for_player(pid)
 
             if group_name:
                 group = db.get_group_by_company_name(company_id, group_name)

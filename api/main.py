@@ -259,8 +259,11 @@ async def leave_company(company_id: int, player_id: int):
 
 @app.get("/groups")
 async def list_groups(company_id: int | None = Query(default=None),
-                      walk_in_only: bool = Query(default=False)):
-    return groups.list_groups(get_db(), company_id, walk_in_only=walk_in_only)
+                      walk_in_only: bool = Query(default=False),
+                      include_archived: bool = Query(default=False)):
+    return groups.list_groups(
+        get_db(), company_id, walk_in_only=walk_in_only, include_archived=include_archived,
+    )
 
 
 @app.post("/groups")
@@ -281,6 +284,16 @@ async def update_group(group_id: int, body: GroupUpdate):
 @app.delete("/groups/{group_id}")
 async def delete_group(group_id: int):
     return groups.delete_group(get_db(), group_id)
+
+
+@app.post("/groups/{group_id}/archive")
+async def archive_group(group_id: int):
+    return groups.archive_group(get_db(), group_id)
+
+
+@app.post("/groups/{group_id}/unarchive")
+async def unarchive_group(group_id: int):
+    return groups.unarchive_group(get_db(), group_id)
 
 
 @app.post("/groups/{group_id}/members")
@@ -366,10 +379,12 @@ async def dash_leaderboard(
     min_size: int | None = Query(default=None),
     max_size: int | None = Query(default=None),
     two_card: bool | None = Query(default=None),
+    include_archived: bool = Query(default=False),
 ):
     return dashboard.get_leaderboard(
         get_db(), game, period, limit, board, company_id, group_id,
         play_mode=play_mode, min_size=min_size, max_size=max_size, two_card=two_card,
+        include_archived=include_archived,
     )
 
 
