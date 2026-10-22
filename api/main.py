@@ -11,7 +11,7 @@ from loguru import logger
 
 from .config import API_HOST, API_PORT, GAME_REGISTRY
 from .database import get_db
-from . import players, sessions, dashboard, companies, groups
+from . import players, sessions, dashboard, companies, groups, tournaments as tournaments_mod
 from . import poller as poller_mod
 from . import import_excel as import_excel_mod
 from .models import (
@@ -20,6 +20,7 @@ from .models import (
     GameSettingsPush, RosterAddRequest,
     CompanyCreate, CompanyUpdate, GroupCreate, GroupUpdate,
     GroupMemberAdd, GroupMemberTransfer, GroupLeaderSet, StartVisitRequest,
+    TournamentCreate, TournamentUpdate, ActivateGlobal,
 )
 
 app = FastAPI(title="Activerse RFID Server", version="1.0.0")
@@ -376,20 +377,97 @@ async def dash_health():
 async def dash_leaderboard(
     game: str = Query(default="all"),
     period: str = Query(default="alltime"),
-    limit: int = Query(default=20, le=100),
+    limit: int = Query(default=20, ge=1, le=100),
     board: str = Query(default="individual"),
     company_id: int | None = Query(default=None),
     group_id: int | None = Query(default=None),
     play_mode: str | None = Query(default=None),
-    min_size: int | None = Query(default=None),
-    max_size: int | None = Query(default=None),
+    min_size: int | None = Query(default=None, ge=0),
+    max_size: int | None = Query(default=None, ge=0),
     two_card: bool | None = Query(default=None),
     include_archived: bool = Query(default=False),
+    tournament_id: int | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    difficulty: str | None = Query(default=None),
 ):
     return dashboard.get_leaderboard(
         get_db(), game, period, limit, board, company_id, group_id,
         play_mode=play_mode, min_size=min_size, max_size=max_size, two_card=two_card,
         include_archived=include_archived,
+        tournament_id=tournament_id, offset=offset, difficulty=difficulty,
+    )
+
+
+# ── Tournaments (P4a) ───────────────────────────────────────────────────
+
+@app.get("/tournaments")
+async def list_tournaments_route(
+    scope: str | None = Query(default=None),
+    type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    company_id: int | None = Query(default=None),
+):
+    return tournaments_mod.list_tournaments(
+        get_db(), scope=scope, type=type, status=status, company_id=company_id
+    )
+
+
+@app.get("/tournaments/active")
+async def tournaments_active():
+    return tournaments_mod.get_active_globals(get_db())
+
+
+@app.post("/tournaments")
+async def create_tournament_route(body: TournamentCreate):
+    return tournaments_mod.create_tournament(get_db(), body.model_dump())
+
+
+@app.get("/tournaments/{tournament_id}")
+async def get_tournament_route(tournament_id: int):
+    return tournaments_mod.get_tournament(get_db(), tournament_id)
+
+
+@app.put("/tournaments/{tournament_id}")
+async def update_tournament_route(tournament_id: int, body: TournamentUpdate):
+    return tournaments_mod.update_tournament(
+        get_db(), tournament_id, body.model_dump(exclude_unset=True)
+    )
+
+
+@app.delete("/tournaments/{tournament_id}")
+async def delete_tournament_route(tournament_id: int):
+    return tournaments_mod.delete_tournament(get_db(), tournament_id)
+
+
+@app.post("/tournaments/{tournament_id}/activate-global")
+async def activate_global_route(tournament_id: int, body: ActivateGlobal = ActivateGlobal()):
+    return tournaments_mod.activate_global(
+        get_db(), tournament_id, body.which
+    )
+
+
+@app.get("/tournaments/{tournament_id}/leaderboard")
+async def tournament_leaderboard_route(
+    tournament_id: int,
+    period: str = Query(default="alltime"),
+    game: str = Query(default="all"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    company_id: int | None = Query(default=None),
+    group_id: int | None = Query(default=None),
+    play_mode: str | None = Query(default=None),
+    min_size: int | None = Query(default=None, ge=0),
+    max_size: int | None = Query(default=None, ge=0),
+    two_card: bool | None = Query(default=None),
+    include_archived: bool = Query(default=False),
+    difficulty: str | None = Query(default=None),
+):
+    return tournaments_mod.get_tournament_leaderboard(
+        get_db(), tournament_id,
+        period=period, game=game, limit=limit, offset=offset,
+        company_id=company_id, group_id=group_id, play_mode=play_mode,
+        min_size=min_size, max_size=max_size, two_card=two_card,
+        include_archived=include_archived, difficulty=difficulty,
     )
 
 

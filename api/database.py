@@ -367,6 +367,42 @@ class Database:
                     (self._now_iso(),),
                 )
                 self._bootstrap_p2_org(con)
+                # P4a: tournaments + leaderboard indexes
+                con.executescript("""
+                    CREATE TABLE IF NOT EXISTS tournaments (
+                      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                      name        TEXT NOT NULL,
+                      type        TEXT NOT NULL CHECK (type IN ('solo','team')),
+                      scope       TEXT NOT NULL CHECK (scope IN ('global','company')),
+                      company_id  INTEGER,
+                      starts_at   TEXT,
+                      ends_at     TEXT,
+                      status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('draft','active','archived')),
+                      system_key  TEXT UNIQUE,
+                      rules_json  TEXT DEFAULT '{}',
+                      created_at  TEXT,
+                      updated_at  TEXT,
+                      created_by  TEXT DEFAULT '',
+                      CHECK ((scope='global' AND company_id IS NULL) OR (scope='company' AND company_id IS NOT NULL)),
+                      FOREIGN KEY (company_id) REFERENCES companies(id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_tournaments_lookup ON tournaments(type, scope, status);
+                    CREATE INDEX IF NOT EXISTS idx_tournaments_company ON tournaments(company_id);
+                    CREATE INDEX IF NOT EXISTS idx_cs_played_at    ON central_scores(played_at);
+                    CREATE INDEX IF NOT EXISTS idx_cs_player       ON central_scores(player_id);
+                    CREATE INDEX IF NOT EXISTS idx_cs_group        ON central_scores(group_id);
+                    CREATE INDEX IF NOT EXISTS idx_cs_company      ON central_scores(company_id, played_at);
+                    CREATE INDEX IF NOT EXISTS idx_cs_session      ON central_scores(session_id);
+                    CREATE INDEX IF NOT EXISTS idx_cts_played_at   ON central_team_scores(played_at);
+                    CREATE INDEX IF NOT EXISTS idx_cts_group       ON central_team_scores(group_id);
+                    CREATE INDEX IF NOT EXISTS idx_cts_company     ON central_team_scores(company_id, played_at);
+                    CREATE INDEX IF NOT EXISTS idx_cts_session     ON central_team_scores(session_id);
+                    CREATE INDEX IF NOT EXISTS idx_pte_company     ON play_time_events(company_id, earned_at);
+                    CREATE INDEX IF NOT EXISTS idx_pte_group       ON play_time_events(group_id);
+                    CREATE INDEX IF NOT EXISTS idx_ps_group        ON player_sessions(group_id);
+                    CREATE INDEX IF NOT EXISTS idx_ps_player       ON player_sessions(player_id, issued_at);
+                """)
+                self._seed_legacy_tournaments(con)
                 # Seed default admin if empty
                 row = con.execute("SELECT COUNT(*) AS c FROM ledplay_login").fetchone()
                 if row["c"] == 0:
@@ -618,6 +654,31 @@ class Database:
         walk_id = self._ensure_walk_in_company_row(con)
         self._backfill_walk_in_members(con, walk_id)
         self._backfill_solo_groups(con, walk_id)
+
+    @staticmethod
+    def _seed_legacy_tournaments(con):
+        """Idempotent legacy global tournaments + active settings (P4a)."""
+        now = Database._now_iso()
+        con.execute(
+            "INSERT OR IGNORE INTO tournaments "
+            "(name, type, scope, company_id, starts_at, ends_at, status, system_key, "
+            "created_at, updated_at, created_by) VALUES "
+            "('All time (legacy) — Solo', 'solo', 'global', NULL, NULL, NULL, 'active', "
+            "'legacy_solo', ?, ?, 'system'), "
+            "('All time (legacy) — Team', 'team', 'global', NULL, NULL, NULL, 'active', "
+            "'legacy_team', ?, ?, 'system')",
+            (now, now, now, now),
+        )
+        con.execute(
+            "INSERT OR IGNORE INTO settings (key, value) "
+            "SELECT 'active_global_solo_tournament_id', CAST(id AS TEXT) "
+            "FROM tournaments WHERE system_key='legacy_solo'"
+        )
+        con.execute(
+            "INSERT OR IGNORE INTO settings (key, value) "
+            "SELECT 'active_global_team_tournament_id', CAST(id AS TEXT) "
+            "FROM tournaments WHERE system_key='legacy_team'"
+        )
 
     def _ensure_walk_in_company_row(self, con) -> int:
         row = con.execute(
@@ -1923,115 +1984,26 @@ class Database:
                         play_mode: Optional[str] = None, min_size: Optional[int] = None,
                         max_size: Optional[int] = None, two_card: Optional[bool] = None,
                         include_archived: bool = False):
-        clauses = ["cs.player_id IS NOT NULL"]
-        params: list = []
-        join_groups = ""
-        if not include_archived:
-            join_groups = "LEFT JOIN groups g ON g.id = cs.group_id "
-            clauses.append("(cs.group_id IS NULL OR g.archived_at IS NULL)")
-        if game != "all":
-            clauses.append("cs.game = ?")
-            params.append(game)
-        if company_id is not None:
-            clauses.append("cs.company_id = ?")
-            params.append(company_id)
-        if group_id is not None:
-            clauses.append("cs.group_id = ?")
-            params.append(group_id)
-        if play_mode is not None:
-            clauses.append("cs.play_mode = ?")
-            params.append(play_mode)
-        if min_size is not None:
-            clauses.append("COALESCE(cs.roster_size_at_play, 1) >= ?")
-            params.append(min_size)
-        if max_size is not None:
-            clauses.append("COALESCE(cs.roster_size_at_play, 1) <= ?")
-            params.append(max_size)
-        if two_card is True:
-            clauses.append("cs.two_card_play = 1")
-        elif two_card is False:
-            clauses.append("(cs.two_card_play IS NULL OR cs.two_card_play = 0)")
-        now = datetime.now()
-        if period == "today":
-            clauses.append("cs.played_at >= ?")
-            params.append(now.strftime("%Y-%m-%d 00:00:00"))
-        elif period == "week":
-            from datetime import timedelta
-            clauses.append("cs.played_at >= ?")
-            params.append((now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S"))
-        elif period == "month":
-            clauses.append("cs.played_at >= ?")
-            params.append(now.strftime("%Y-%m-01 00:00:00"))
-        where = " AND ".join(clauses)
-        params.append(limit)
-        rows = self._execute(
-            f"SELECT cs.*, ci.name AS player_name FROM central_scores cs "
-            f"{join_groups}"
-            f"LEFT JOIN custom_info ci ON ci.custom_id = cs.player_id "
-            f"WHERE {where} ORDER BY cs.score DESC LIMIT ?",
-            tuple(params),
-            fetch="all",
+        from .leaderboard import tournament_leaderboard
+        return tournament_leaderboard(
+            self, board="individual", use_active=False, game=game, period=period,
+            limit=limit, company_id=company_id, group_id=group_id, play_mode=play_mode,
+            min_size=min_size, max_size=max_size, two_card=two_card,
+            include_archived=include_archived,
         )
-        return [dict(r) for r in rows] if rows else []
 
     def get_team_leaderboard(self, game: str = "all", period: str = "alltime", limit: int = 20,
                              company_id: Optional[int] = None, group_id: Optional[int] = None,
                              play_mode: Optional[str] = None, min_size: Optional[int] = None,
                              max_size: Optional[int] = None, two_card: Optional[bool] = None,
                              include_archived: bool = False):
-        # No default min_size here — group-size filtering is explicit (P4 team-tab default).
-        clauses = [
-            "cts.session_id IS NOT NULL",
-            "cts.group_id IS NOT NULL",
-        ]
-        params: list = []
-        join_groups = ""
-        if not include_archived:
-            join_groups = "LEFT JOIN groups g ON g.id = cts.group_id "
-            clauses.append("(g.id IS NULL OR g.archived_at IS NULL)")
-        if game != "all":
-            clauses.append("cts.game = ?")
-            params.append(game)
-        if company_id is not None:
-            clauses.append("cts.company_id = ?")
-            params.append(company_id)
-        if group_id is not None:
-            clauses.append("cts.group_id = ?")
-            params.append(group_id)
-        if play_mode is not None:
-            clauses.append("cts.play_mode = ?")
-            params.append(play_mode)
-        if min_size is not None:
-            clauses.append("COALESCE(cts.roster_size_at_play, cts.member_count, 1) >= ?")
-            params.append(min_size)
-        if max_size is not None:
-            clauses.append("COALESCE(cts.roster_size_at_play, cts.member_count, 1) <= ?")
-            params.append(max_size)
-        if two_card is True:
-            clauses.append("cts.two_card_play = 1")
-        elif two_card is False:
-            clauses.append("(cts.two_card_play IS NULL OR cts.two_card_play = 0)")
-        now = datetime.now()
-        if period == "today":
-            clauses.append("cts.played_at >= ?")
-            params.append(now.strftime("%Y-%m-%d 00:00:00"))
-        elif period == "week":
-            from datetime import timedelta
-            clauses.append("cts.played_at >= ?")
-            params.append((now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S"))
-        elif period == "month":
-            clauses.append("cts.played_at >= ?")
-            params.append(now.strftime("%Y-%m-01 00:00:00"))
-        where = " AND ".join(clauses)
-        params.append(limit)
-        rows = self._execute(
-            f"SELECT cts.* FROM central_team_scores cts "
-            f"{join_groups}"
-            f"WHERE {where} ORDER BY cts.score DESC LIMIT ?",
-            tuple(params),
-            fetch="all",
+        from .leaderboard import tournament_leaderboard
+        return tournament_leaderboard(
+            self, board="team", use_active=False, game=game, period=period, limit=limit,
+            company_id=company_id, group_id=group_id, play_mode=play_mode,
+            min_size=min_size, max_size=max_size, two_card=two_card,
+            include_archived=include_archived,
         )
-        return [dict(r) for r in rows] if rows else []
 
     # ── Companies / groups (Phase B) ──────────────────────────────────────
 

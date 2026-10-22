@@ -110,3 +110,25 @@ class LoginRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     username: str
     password: str
+
+
+class TournamentCreate(BaseModel):
+    name: str
+    type: str
+    scope: str
+    company_id: Optional[int] = None
+    starts_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    status: str = "active"
+    created_by: Optional[str] = ""
+
+
+class TournamentUpdate(BaseModel):
+    name: Optional[str] = None
+    starts_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    status: Optional[str] = None
+
+
+class ActivateGlobal(BaseModel):
+    which: Optional[str] = None
