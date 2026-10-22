@@ -11,6 +11,7 @@ import GroupsList from './screens/GroupsList'
 import GroupDetail from './screens/GroupDetail'
 import Login from './screens/Login'
 import PublicLeaderboard from './screens/PublicLeaderboard'
+import TournamentsAdmin from './screens/TournamentsAdmin'
 
 const navStyle = {
   display: 'flex',
@@ -40,6 +41,7 @@ function AppShell() {
         <NavLink to="/groups" style={linkStyle}>Groups</NavLink>
         <NavLink to="/sessions" style={linkStyle}>Sessions</NavLink>
         <NavLink to="/dashboard" style={linkStyle}>Dashboard</NavLink>
+        <NavLink to="/tournaments" style={linkStyle}>Tournaments</NavLink>
         <NavLink to="/settings" style={linkStyle}>Settings</NavLink>
       </nav>
       <main style={{ padding: '1.5rem', maxWidth: 1200, margin: '0 auto' }}>
@@ -52,6 +54,7 @@ function AppShell() {
           <Route path="/groups/:id" element={<GroupDetail />} />
           <Route path="/sessions" element={<SessionsAdmin />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/tournaments" element={<TournamentsAdmin />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

@@ -1,39 +1,56 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import GameHealthTile from '../components/GameHealthTile'
 import LeaderboardTable from '../components/LeaderboardTable'
+import LeaderboardFilterBar from '../components/LeaderboardFilterBar'
 import { api } from '../api'
+import {
+  defaultLeaderboardFilters,
+  buildLeaderboardQuery,
+  boardToTournamentType,
+  formatTournamentWindow,
+} from '../leaderboardQuery'
 
 export default function Dashboard() {
   const [health, setHealth] = useState([])
   const [leaderboard, setLeaderboard] = useState([])
   const [stats, setStats] = useState(null)
-  const [companies, setCompanies] = useState([])
-  const [game, setGame] = useState('all')
-  const [period, setPeriod] = useState('alltime')
-  const [board, setBoard] = useState('individual')
-  const [companyId, setCompanyId] = useState('')
-  const [includeArchived, setIncludeArchived] = useState(false)
+  const [filters, setFilters] = useState(() => defaultLeaderboardFilters('admin'))
+  const [activeGlobals, setActiveGlobals] = useState({ solo: null, team: null })
+  const [tournaments, setTournaments] = useState([])
+
+  const tType = boardToTournamentType(filters.board)
+
+  const tournamentMeta = useCallback(() => {
+    if (filters.tournamentId) {
+      const t = tournaments.find(x => String(x.id) === String(filters.tournamentId))
+      if (t) return t
+    }
+    return tType === 'team' ? activeGlobals.team : activeGlobals.solo
+  }, [filters.tournamentId, filters.board, tournaments, activeGlobals, tType])()
 
   const load = async () => {
     try {
-      const companyQ = companyId ? `&company_id=${companyId}` : ''
-      const archQ = includeArchived ? '&include_archived=true' : ''
-      const [h, lb, st, cos] = await Promise.all([
+      const q = buildLeaderboardQuery(filters, { limit: 20 })
+      const [h, lb, st, active, tlist] = await Promise.all([
         api('/dashboard/health'),
-        api(`/dashboard/leaderboard?game=${game}&period=${period}&limit=20&board=${board}${companyQ}${archQ}`),
+        api(`/dashboard/leaderboard?${q}`),
         api('/dashboard/stats'),
-        api('/companies'),
+        api('/tournaments/active'),
+        api(`/tournaments?status=active&type=${tType}`),
       ])
       setHealth(h)
       setLeaderboard(lb)
       setStats(st)
-      setCompanies(cos)
+      setActiveGlobals(active)
+      setTournaments(tlist)
     } catch (e) {
       console.error(e)
     }
   }
 
-  useEffect(() => { load() }, [game, period, board, companyId, includeArchived])
+  useEffect(() => { load() }, [filters])
+
+  const onFiltersChange = next => setFilters(next)
 
   return (
     <div>
@@ -54,48 +71,27 @@ export default function Dashboard() {
         </section>
       )}
       <section>
-        <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {['individual', 'team'].map(b => (
-              <button
-                key={b}
-                style={board === b ? boardActive : boardBtn}
-                onClick={() => setBoard(b)}
-              >
-                {b === 'individual' ? 'Individual' : 'Team'}
-              </button>
-            ))}
-          </div>
-          <select style={select} value={companyId} onChange={e => setCompanyId(e.target.value)}>
-            <option value="">All companies</option>
-            {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <select style={select} value={game} onChange={e => setGame(e.target.value)}>
-            <option value="all">All Games</option>
-            <option value="hoops">Hoops</option>
-            <option value="laser">Laser Trap</option>
-            <option value="climb">Climb</option>
-            <option value="grid">Floor Is Lava</option>
-            <option value="led_hex">LED Hexagon</option>
-          </select>
-          <select style={select} value={period} onChange={e => setPeriod(e.target.value)}>
-            <option value="today">Today</option>
-            <option value="week">This Week</option>
-            <option value="month">This Month</option>
-            <option value="alltime">All Time</option>
-          </select>
-          <label style={{ color: '#9aa0a6', fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={includeArchived}
-              onChange={e => setIncludeArchived(e.target.checked)}
-              style={{ marginRight: 6 }}
-            />
-            Include archived groups
-          </label>
-          <button style={btn} onClick={load}>Refresh</button>
+        <h2 style={{ marginBottom: '0.75rem', fontSize: '1.1rem' }}>Leaderboard</h2>
+        {tournamentMeta && (
+          <p style={{ color: '#9aa0a6', fontSize: 14, marginBottom: '0.75rem' }}>
+            Tournament: <strong style={{ color: '#e8eaed' }}>{tournamentMeta.name}</strong>
+            {' '}({formatTournamentWindow(tournamentMeta)})
+          </p>
+        )}
+        <LeaderboardFilterBar
+          variant="admin"
+          filters={filters}
+          onChange={onFiltersChange}
+          style={{ marginBottom: '1rem' }}
+        />
+        <div style={{ marginBottom: '0.75rem' }}>
+          <button style={btn} type="button" onClick={load}>Refresh</button>
         </div>
-        <LeaderboardTable rows={leaderboard} />
+        <LeaderboardTable
+          rows={leaderboard}
+          board={filters.board}
+          emptyMessage="No plays match this tournament window and filters."
+        />
       </section>
     </div>
   )
@@ -110,7 +106,4 @@ function Stat({ label, value }) {
   )
 }
 
-const select = { padding: '0.5rem', borderRadius: 6, border: '1px solid #2a2d3a', background: '#0f1117', color: '#e8eaed' }
 const btn = { padding: '0.5rem 1rem', background: '#3b5bdb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }
-const boardBtn = { padding: '0.5rem 1rem', background: '#1a1d27', color: '#9aa0a6', border: '1px solid #2a2d3a', borderRadius: 6, cursor: 'pointer' }
-const boardActive = { ...boardBtn, background: '#3b5bdb', color: '#fff', borderColor: '#3b5bdb' }
