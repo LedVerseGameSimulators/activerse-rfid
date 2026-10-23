@@ -367,6 +367,7 @@ class Database:
                     (self._now_iso(),),
                 )
                 self._bootstrap_p2_org(con)
+                self._backfill_day_one_roster_join_ledger(con)
                 # P4a: tournaments + leaderboard indexes
                 con.executescript("""
                     CREATE TABLE IF NOT EXISTS tournaments (
@@ -1074,6 +1075,7 @@ class Database:
         group_id: Optional[int] = None,
         company_id: Optional[int] = None,
         notes: str = "",
+        earned_at: Optional[str] = None,
     ):
         con.execute(
             "INSERT INTO play_time_events "
@@ -1086,10 +1088,70 @@ class Database:
                 company_id,
                 minutes,
                 source,
-                self._now_iso(),
+                earned_at or self._now_iso(),
                 notes or "",
             ),
         )
+
+    def _credit_day_one_roster_joins(
+        self,
+        con,
+        session_id: int,
+        payer_id: int,
+        member_ids: list,
+        duration_min: float,
+        issued_at: str,
+        group_id: Optional[int],
+        company_id: Optional[int],
+    ):
+        """Stats-only roster_join for members present at visit start (not the payer)."""
+        if duration_min is None:
+            return
+        minutes = float(duration_min)
+        if minutes <= 0:
+            return
+        for pid in member_ids:
+            if pid == payer_id:
+                continue
+            already = con.execute(
+                "SELECT 1 FROM play_time_events WHERE session_id = ? AND player_id = ? "
+                "AND source = 'roster_join' LIMIT 1",
+                (session_id, pid),
+            ).fetchone()
+            if already:
+                continue
+            self._append_play_time_event(
+                con,
+                pid,
+                minutes,
+                "roster_join",
+                session_id=session_id,
+                group_id=group_id,
+                company_id=company_id,
+                earned_at=issued_at,
+            )
+
+    @staticmethod
+    def _backfill_day_one_roster_join_ledger(con) -> int:
+        """Idempotent: roster_join for historical day-one members missing ledger rows."""
+        before = con.execute("SELECT COUNT(*) AS c FROM play_time_events").fetchone()["c"]
+        con.execute(
+            "INSERT INTO play_time_events "
+            "(player_id, session_id, group_id, company_id, minutes, source, earned_at, notes) "
+            "SELECT sr.player_id, ps.id, ps.group_id, ps.company_id, CAST(ps.duration_min AS REAL), "
+            "'roster_join', ps.issued_at, 'backfill:day_one_roster' "
+            "FROM session_roster sr "
+            "JOIN player_sessions ps ON ps.id = sr.session_id "
+            "WHERE sr.player_id != ps.player_id "
+            "AND ps.duration_min IS NOT NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM play_time_events pte "
+            "  WHERE pte.session_id = sr.session_id AND pte.player_id = sr.player_id "
+            "  AND pte.source = 'roster_join'"
+            ")"
+        )
+        after = con.execute("SELECT COUNT(*) AS c FROM play_time_events").fetchone()["c"]
+        return int(after) - int(before)
 
     def append_play_time_event(
         self,
@@ -1396,6 +1458,17 @@ class Database:
                     session_id=sid,
                     group_id=group_id,
                     company_id=group["company_id"],
+                    earned_at=now,
+                )
+                self._credit_day_one_roster_joins(
+                    con,
+                    sid,
+                    leader_id,
+                    member_ids,
+                    duration_min,
+                    now,
+                    group_id,
+                    group["company_id"],
                 )
                 con.commit()
                 return {
