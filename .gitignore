@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+data/
+logs/
 data/*.sqlite
 data/*.sqlite-*
 node_modules/

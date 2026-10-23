@@ -1133,8 +1133,28 @@ class Database:
 
     @staticmethod
     def _backfill_day_one_roster_join_ledger(con) -> int:
-        """Idempotent: roster_join for historical day-one members missing ledger rows."""
+        """Idempotent stats backfill for visits that predate the play_time_events ledger.
+
+        Payer: one visit_start per session (duration_min at issued_at) when missing.
+        Members: roster_join only for group visits (player_sessions.group_id IS NOT NULL).
+        session_roster has no join timestamp, so non-group sessions are skipped for members
+        (legacy desk-added rosters may include late joiners — full duration would over-credit).
+        Anyone who already has any play_time_events row for that session is skipped.
+        """
         before = con.execute("SELECT COUNT(*) AS c FROM play_time_events").fetchone()["c"]
+        con.execute(
+            "INSERT INTO play_time_events "
+            "(player_id, session_id, group_id, company_id, minutes, source, earned_at, notes) "
+            "SELECT ps.player_id, ps.id, ps.group_id, ps.company_id, CAST(ps.duration_min AS REAL), "
+            "'visit_start', ps.issued_at, 'backfill:day_one_roster' "
+            "FROM player_sessions ps "
+            "WHERE ps.duration_min IS NOT NULL AND CAST(ps.duration_min AS REAL) > 0 "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM play_time_events pte "
+            "  WHERE pte.session_id = ps.id AND pte.player_id = ps.player_id "
+            "  AND pte.source = 'visit_start'"
+            ")"
+        )
         con.execute(
             "INSERT INTO play_time_events "
             "(player_id, session_id, group_id, company_id, minutes, source, earned_at, notes) "
@@ -1143,11 +1163,11 @@ class Database:
             "FROM session_roster sr "
             "JOIN player_sessions ps ON ps.id = sr.session_id "
             "WHERE sr.player_id != ps.player_id "
-            "AND ps.duration_min IS NOT NULL "
+            "AND ps.group_id IS NOT NULL "
+            "AND ps.duration_min IS NOT NULL AND CAST(ps.duration_min AS REAL) > 0 "
             "AND NOT EXISTS ("
             "  SELECT 1 FROM play_time_events pte "
-            "  WHERE pte.session_id = sr.session_id AND pte.player_id = sr.player_id "
-            "  AND pte.source = 'roster_join'"
+            "  WHERE pte.session_id = sr.session_id AND pte.player_id = sr.player_id"
             ")"
         )
         after = con.execute("SELECT COUNT(*) AS c FROM play_time_events").fetchone()["c"]

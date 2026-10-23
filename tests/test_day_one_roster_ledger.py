@@ -191,3 +191,176 @@ def test_backfill_idempotent_on_populated_db(db, tmp_path, monkeypatch):
         fetch="one",
     )["c"]
     assert added == added_second
+
+
+def _reopen_db(path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(path))
+    for mod in ("api.config", "api.database"):
+        sys.modules.pop(mod, None)
+    return importlib.import_module("api.database")
+
+
+def test_backfill_payer_visit_start_legacy_session(db, tmp_path, monkeypatch):
+    import sqlite3
+
+    leader = _make_player(db, "555-d060", "LegacyPay", credit_minutes=50)
+    _bind_card(db, leader, "LEGACYPAY01")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    expiry = (datetime.now() + timedelta(minutes=45)).strftime("%Y-%m-%d %H:%M:%S")
+    sid = db._executemany_return_id(
+        "INSERT INTO player_sessions (player_id, card_id, issued_at, expiry_at, duration_min) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (leader, "LEGACYPAY01", now, expiry, 45),
+    )
+    db._execute(
+        "INSERT OR IGNORE INTO session_roster (session_id, player_id) VALUES (?, ?)",
+        (sid, leader),
+    )
+    db_path = tmp_path / "legacy.sqlite"
+    src = db._conn()
+    dst = sqlite3.connect(str(db_path))
+    src.backup(dst)
+    dst.close()
+    src.close()
+
+    dm = _reopen_db(db_path, monkeypatch)
+    dbf = dm.Database()
+    rows = dbf._execute(
+        "SELECT source, minutes FROM play_time_events WHERE session_id = ? AND player_id = ?",
+        (sid, leader),
+        fetch="all",
+    )
+    assert len(rows) == 1
+    assert rows[0]["source"] == "visit_start"
+    assert rows[0]["minutes"] == 45.0
+
+
+def test_backfill_group_members_not_solo_desk_roster(db, tmp_path, monkeypatch):
+    import sqlite3
+
+    leader = _make_player(db, "555-d070", "GrpBf", credit_minutes=80)
+    member = _make_player(db, "555-d071", "GrpBfM")
+    company = db.create_company("GrpBfCo")
+    group = db.create_group(company["id"], "GrpBfG")
+    db.add_group_member_atomic(group["id"], leader)
+    db.add_group_member_atomic(group["id"], member)
+    db.set_group_leader(group["id"], leader)
+    _bind_card(db, leader, "GRPBFCARD01")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    expiry = (datetime.now() + timedelta(minutes=60)).strftime("%Y-%m-%d %H:%M:%S")
+    sid = db._executemany_return_id(
+        "INSERT INTO player_sessions (player_id, card_id, issued_at, expiry_at, duration_min, "
+        "group_id, company_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (leader, "GRPBFCARD01", now, expiry, 60, group["id"], company["id"]),
+    )
+    db._execute(
+        "INSERT INTO session_roster (session_id, player_id) VALUES (?, ?), (?, ?)",
+        (sid, leader, sid, member),
+    )
+    db._execute("DELETE FROM play_time_events")
+
+    db_path = tmp_path / "groupbf.sqlite"
+    src = db._conn()
+    dst = sqlite3.connect(str(db_path))
+    src.backup(dst)
+    dst.close()
+    src.close()
+
+    dm = _reopen_db(db_path, monkeypatch)
+    dbf = dm.Database()
+    assert dbf._execute(
+        "SELECT COUNT(*) c FROM play_time_events WHERE session_id = ? AND source = 'visit_start'",
+        (sid,),
+        fetch="one",
+    )["c"] == 1
+    assert dbf._execute(
+        "SELECT COUNT(*) c FROM play_time_events WHERE session_id = ? AND player_id = ? "
+        "AND source = 'roster_join'",
+        (sid, member),
+        fetch="one",
+    )["c"] == 1
+
+
+def test_backfill_skips_non_group_session_members(db, tmp_path, monkeypatch):
+    import sqlite3
+
+    leader = _make_player(db, "555-d080", "DeskLead", credit_minutes=60)
+    member = _make_player(db, "555-d081", "DeskMate")
+    _bind_card(db, leader, "DESKSESS01")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    expiry = (datetime.now() + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    sid = db._executemany_return_id(
+        "INSERT INTO player_sessions (player_id, card_id, issued_at, expiry_at, duration_min) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (leader, "DESKSESS01", now, expiry, 30),
+    )
+    db._execute(
+        "INSERT INTO session_roster (session_id, player_id) VALUES (?, ?), (?, ?)",
+        (sid, leader, sid, member),
+    )
+    db._execute("DELETE FROM play_time_events")
+
+    db_path = tmp_path / "desk.sqlite"
+    src = db._conn()
+    dst = sqlite3.connect(str(db_path))
+    src.backup(dst)
+    dst.close()
+    src.close()
+
+    dm = _reopen_db(db_path, monkeypatch)
+    dbf = dm.Database()
+    assert dbf._execute(
+        "SELECT COUNT(*) c FROM play_time_events WHERE session_id = ? AND source = 'visit_start'",
+        (sid,),
+        fetch="one",
+    )["c"] == 1
+    assert dbf._execute(
+        "SELECT COUNT(*) c FROM play_time_events WHERE session_id = ? AND player_id = ?",
+        (sid, member),
+        fetch="one",
+    )["c"] == 0
+
+
+def test_backfill_does_not_touch_existing_late_join_row(db, tmp_path, monkeypatch):
+    import sqlite3
+
+    leader = _make_player(db, "555-d090", "LateBf", credit_minutes=90)
+    member = _make_player(db, "555-d091", "LateBfM")
+    company = db.create_company("LateBfCo")
+    group = db.create_group(company["id"], "LateBfG")
+    db.add_group_member_atomic(group["id"], leader)
+    db.set_group_leader(group["id"], leader)
+    _bind_card(db, leader, "LATEBFCARD1")
+    visit = db.issue_group_visit_atomic(group["id"], 60, card_id="LATEBFCARD1")
+    sid = visit["session_id"]
+    with patch.object(db, "_minutes_remaining_clock", return_value=22.0):
+        db.add_roster_member_atomic(sid, member)
+    before = db._execute(
+        "SELECT minutes FROM play_time_events WHERE session_id = ? AND player_id = ? "
+        "AND source = 'roster_join'",
+        (sid, member),
+        fetch="one",
+    )["minutes"]
+
+    db_path = tmp_path / "latebf.sqlite"
+    src = db._conn()
+    dst = sqlite3.connect(str(db_path))
+    src.backup(dst)
+    dst.close()
+    src.close()
+
+    dm = _reopen_db(db_path, monkeypatch)
+    dbf = dm.Database()
+    after = dbf._execute(
+        "SELECT minutes FROM play_time_events WHERE session_id = ? AND player_id = ? "
+        "AND source = 'roster_join'",
+        (sid, member),
+        fetch="one",
+    )["minutes"]
+    assert after == before == 22.0
+    assert dbf._execute(
+        "SELECT COUNT(*) c FROM play_time_events WHERE session_id = ? AND player_id = ? "
+        "AND source = 'roster_join'",
+        (sid, member),
+        fetch="one",
+    )["c"] == 1

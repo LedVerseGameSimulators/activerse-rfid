@@ -95,6 +95,15 @@ LAN app, not internet-facing.
 Session model is clock-based: **Start Visit** on a group deducts the visit duration from
 the leader's credit balance up front; early close refunds unused clock minutes to the payer (P1).
 
+**Play-time ledger (`play_time_events`):** append-only stats (never changes wallet balance or
+refunds). Live visits: payer gets `visit_start` (full `duration_min`); each non-payer on the
+roster at Start Visit gets `roster_join` (full visit minutes, `earned_at` = visit `issued_at`);
+late roster adds get `roster_join` for **remaining** clock minutes only. One-off migration
+`backfill:day_one_roster` inserts missing payer `visit_start` rows for all historical sessions,
+and `roster_join` for non-payer roster members **only when `group_id` is set** (group Start
+Visit — roster assumed seeded at open). Sessions without `group_id` skip member backfill
+because `session_roster` has no join time (avoids over-crediting legacy desk-added members).
+
 - **`POST /sessions`** — **retired (410 Gone).** Body is ignored. Response:
   `{"detail":"Start a visit from the player's group instead."}` — use
   **`POST /groups/{group_id}/start-visit`** (solo group for individuals; team group for
