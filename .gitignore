@@ -11,3 +11,11 @@ venv/
 
 .env
 frontend/.env
+
+# K2b freeze / packaging
+dist/
+packaging/.venv/
+build/
+*.spec
+.DS_Store
+.claude/
