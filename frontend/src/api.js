@@ -1,4 +1,7 @@
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:9000'
+// Same-origin by default: the API serves this UI on :9000 and also answers
+// under /api/* (prefix stripped), exactly like the Vite proxy (dev :5180).
+// Set VITE_API_URL to point the UI at a different API origin.
+const BASE = import.meta.env.VITE_API_URL || '/api'
 
 function errorMessage(err, statusText) {
   const detail = err.detail ?? err.error ?? statusText

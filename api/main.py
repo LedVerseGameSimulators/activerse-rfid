@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from .config import API_HOST, API_PORT, GAME_REGISTRY
+from .runtime_paths import ui_dir
+from .ui_mount import mount_ui
 from .database import get_db
 from . import players, sessions, dashboard, companies, groups, tournaments as tournaments_mod, stats as stats_mod
 from . import poller as poller_mod
@@ -584,6 +586,10 @@ async def dash_player(player_id: int):
 async def poll_now():
     await poller_mod.poll_all(get_db())
     return {"success": True}
+
+
+# ── Static UI (mounted LAST so every API route above wins) ────────────────
+mount_ui(app, ui_dir())
 
 
 if __name__ == "__main__":

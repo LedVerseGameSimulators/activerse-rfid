@@ -3,11 +3,12 @@ RFID Server Configuration
 Central hub for all 4 game machines.
 """
 import os
-from pathlib import Path
+
+from .runtime_paths import resolve_db_path
 
 # ── Database ───────────────────────────────────────────────────────────────
 # Dev: SQLite (same machine). Prod: MySQL on this server.
-DB_PATH = os.getenv("DB_PATH", str(Path(__file__).parent.parent / "data" / "rfid.sqlite"))
+DB_PATH = resolve_db_path(os.getenv("DB_PATH"))
 
 # ── Session rules ──────────────────────────────────────────────────────────
 DEFAULT_SESSION_MINUTES = int(os.getenv("DEFAULT_SESSION_MINUTES", "60"))
