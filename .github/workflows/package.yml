@@ -1,0 +1,133 @@
+name: Package operator build
+
+# Binary-only operator package (no Python/JS source). Manual run = build + smoke
+# + downloadable artifact. A v* tag also publishes a GitHub Release.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    # Pre-merge validation: workflow_dispatch only works once this file is on main.
+    branches: ["feature/k2b-binary-packaging"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-nuitka:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build (Nuitka)
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$($env:GITHUB_RUN_NUMBER)" }
+          powershell -File packaging\build_nuitka_windows.ps1 -Tag $tag
+
+      - name: Gate - no source / db / .env in package
+        shell: pwsh
+        run: |
+          $stage = Get-ChildItem dist\release -Directory | Select-Object -First 1
+          $bad = Get-ChildItem $stage.FullName -Recurse -Force -Include *.py,*.pyc,*.sqlite,*.jsx,.env
+          $bad += Get-ChildItem $stage.FullName -Force -Directory -Filter data
+          if ($bad) { $bad | Select-Object -First 20 FullName; throw "forbidden files in package" }
+          if (-not (Test-Path "$($stage.FullName)\.env.example")) { throw ".env.example missing" }
+          if (-not (Test-Path "$($stage.FullName)\ui\index.html")) { throw "ui/index.html missing" }
+          Get-ChildItem $stage.FullName | Select-Object Name | Format-Table -HideTableHeaders
+
+      - name: Smoke - frozen exe serves API + UI on :9000
+        shell: pwsh
+        run: |
+          $stage = (Get-ChildItem dist\release -Directory | Select-Object -First 1).FullName
+          $exe = Join-Path $stage "Activerse RFID.exe"
+          & $exe --selftest | Tee-Object selftest.txt
+          if ($LASTEXITCODE -ne 0) { throw "selftest failed" }
+          # What the tech does on first install: .env from .env.example
+          Copy-Item "$stage\.env.example" "$stage\.env"
+          $p = Start-Process -FilePath $exe -ArgumentList "--no-browser" -PassThru
+          $ok = $false
+          foreach ($i in 1..45) {
+            Start-Sleep 2
+            try { if ((Invoke-WebRequest http://127.0.0.1:9000/ -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { $ok = $true; break } } catch {}
+          }
+          if (-not $ok) { Get-Content "$stage\logs\*.log" -ErrorAction SilentlyContinue | Select-Object -Last 80; throw "UI/API did not come up" }
+          $h = Invoke-RestMethod http://127.0.0.1:9000/health
+          if ($h.status -ne "ok") { throw "health not ok" }
+          $idx = Invoke-WebRequest http://127.0.0.1:9000/ -UseBasicParsing
+          if ($idx.Content -notmatch '<div id="root">') { throw "/ is not the UI index" }
+          $nav = Invoke-WebRequest http://127.0.0.1:9000/players -UseBasicParsing -Headers @{Accept="text/html"}
+          if ($nav.Content -notmatch '<div id="root">') { throw "SPA navigation /players did not return the UI" }
+          $pl = Invoke-RestMethod http://127.0.0.1:9000/players
+          $pl2 = Invoke-RestMethod http://127.0.0.1:9000/api/players
+          $st = Invoke-RestMethod http://127.0.0.1:9000/settings
+          $dh = Invoke-RestMethod http://127.0.0.1:9000/dashboard/health
+          $v = Invoke-RestMethod "http://127.0.0.1:9000/validate?card_id=CI-NOCARD"
+          $lg = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9000/auth/login -ContentType "application/json" -Body '{"username":"admin","password":"change-me"}'
+          Write-Host "login: $($lg | ConvertTo-Json -Compress)"
+          if (-not $lg.success) { throw "default admin login failed (.env ADMIN_PASSWORD not honoured?)" }
+          $created = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9000/api/players -ContentType "application/json" -Body '{"name":"CI Smoke","phone":"0000000000"}'
+          if (-not $created.id) { throw "create player failed" }
+          if (-not (Test-Path "$stage\data\rfid.sqlite")) { throw "data\rfid.sqlite not created" }
+          Write-Host "RESULT api_ui_smoke=ok db_created=True"
+          & $exe --stop
+          Start-Sleep 3
+          $up = $false; try { Invoke-WebRequest http://127.0.0.1:9000/health -UseBasicParsing -TimeoutSec 2 | Out-Null; $up = $true } catch {}
+          Write-Host "RESULT stop_freed_port=$(-not $up)"
+          if ($up) { throw "port 9000 still in use after --stop" }
+
+      # Informational (continue-on-error): results are printed in the log. These
+      # exercise the Windows-only behaviours that need no hardware.
+      - name: Check - kiosk, Ctrl+Shift+K hotkey, STOP
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $stage = (Get-ChildItem dist\release -Directory | Select-Object -First 1).FullName
+          $exe = Join-Path $stage "Activerse RFID.exe"
+          function Kiosk { Get-CimInstance Win32_Process -Filter "Name='msedge.exe' OR Name='chrome.exe'" | Where-Object { $_.CommandLine -like "*ActiverseKiosk*rfid*" } }
+          function Up { try { (Invoke-WebRequest http://127.0.0.1:9000/health -UseBasicParsing -TimeoutSec 2).StatusCode } catch { 0 } }
+          Start-Process -FilePath $exe | Out-Null
+          $ok = $false
+          foreach ($i in 1..45) { Start-Sleep 2; if ((Up) -eq 200) { $ok = $true; break } }
+          Write-Host "RESULT api_up=$ok"
+          Start-Sleep 10
+          $k = @(Kiosk)
+          Write-Host "RESULT kiosk_running_with_profile=$($k.Count -gt 0) procs=$($k.Count)"
+          $vis = Get-Process | Where-Object { $_.ProcessName -like "Activerse RFID*" -and $_.MainWindowHandle -ne 0 }
+          Write-Host "RESULT no_visible_exe_window=$(-not $vis)"
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class Kb { [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra); }
+          "@
+          [Kb]::keybd_event(0x11,0,0,[UIntPtr]::Zero); [Kb]::keybd_event(0x10,0,0,[UIntPtr]::Zero); [Kb]::keybd_event(0x4B,0,0,[UIntPtr]::Zero)
+          Start-Sleep -Milliseconds 150
+          [Kb]::keybd_event(0x4B,0,2,[UIntPtr]::Zero); [Kb]::keybd_event(0x10,0,2,[UIntPtr]::Zero); [Kb]::keybd_event(0x11,0,2,[UIntPtr]::Zero)
+          $gone = $false
+          foreach ($i in 1..10) { Start-Sleep 1; if (-not (Kiosk)) { $gone = $true; break } }
+          Write-Host "RESULT hotkey_closed_kiosk=$gone"
+          Write-Host "RESULT server_alive_after_hotkey=$((Up) -ne 0)"
+          cmd /c "`"$stage\STOP_SERVER.bat`""
+          Start-Sleep 4
+          Write-Host "RESULT stop_bat_freed_port=$((Up) -eq 0)"
+          $left = @(Get-Process | Where-Object { $_.ProcessName -like "Activerse RFID*" })
+          Write-Host "RESULT no_leftover_processes=$($left.Count -eq 0)"
+          Write-Host "--- supervisor.log"; Get-Content "$stage\logs\supervisor.log" -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Activerse-RFID-windows-nuitka
+          path: dist/release/*.zip
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/release/*.zip
