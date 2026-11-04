@@ -52,7 +52,7 @@ echo "==> Nuitka ${EXE_NAME} (this can take a long time)"
   --include-package=httpcore \
   --include-package=anyio \
   --include-package=h11 \
-  --include-package=sniffio \
+  --include-package=annotated_types \
   --include-package=idna \
   --include-package=certifi \
   --include-package-data=certifi \
@@ -61,7 +61,7 @@ echo "==> Nuitka ${EXE_NAME} (this can take a long time)"
   --include-package=openpyxl \
   --include-package=et_xmlfile \
   --include-package=multipart \
-  --include-module=python_multipart \
+  --include-package=python_multipart \
   --include-module=sqlite3 \
   "${NOFOLLOW_ARGS[@]}" \
   floor_launcher/entry.py

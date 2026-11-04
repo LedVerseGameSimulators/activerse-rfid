@@ -31,11 +31,11 @@ $NuitkaArgs = @(
   "--include-package=fastapi", "--include-package=starlette", "--include-package=uvicorn",
   "--include-package=pydantic", "--include-package=pydantic_core",
   "--include-package=httpx", "--include-package=httpcore", "--include-package=anyio",
-  "--include-package=h11", "--include-package=sniffio", "--include-package=idna",
+  "--include-package=h11", "--include-package=idna", "--include-package=annotated_types",
   "--include-package=certifi", "--include-package-data=certifi",
   "--include-package=loguru", "--include-package=dotenv",
   "--include-package=openpyxl", "--include-package=et_xmlfile",
-  "--include-package=multipart", "--include-module=python_multipart",
+  "--include-package=multipart", "--include-package=python_multipart",
   "--include-module=sqlite3"
 )
 foreach ($m in $NoFollow) { $NuitkaArgs += "--nofollow-import-to=$m" }
